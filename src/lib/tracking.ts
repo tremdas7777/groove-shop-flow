@@ -195,13 +195,19 @@ export function firePixels(event: AnalyticsEvent) {
   };
   const meta = metaMap[event.name];
   if (meta && window.fbq) {
-    window.fbq("track", meta, {
-      value: value || undefined,
-      currency,
-      content_ids: contentIds,
-      content_name: contentName || undefined,
-      content_type: "product",
-    });
+    const eventID = String(event.props?.event_id ?? event.props?.order_id ?? event.id);
+    window.fbq(
+      "track",
+      meta,
+      {
+        value: value || undefined,
+        currency,
+        content_ids: contentIds,
+        content_name: contentName || undefined,
+        content_type: "product",
+      },
+      { eventID },
+    );
   }
 
   const ttMap: Record<string, string> = {
@@ -247,14 +253,20 @@ export function firePixels(event: AnalyticsEvent) {
 type Ingest = (event: AnalyticsEvent) => void;
 
 let ingestRef: Ingest | null = null;
+let lastTrackedName = "page_view";
 
 export function setEventIngest(fn: Ingest | null) {
   ingestRef = fn;
 }
 
+export function getLastTrackedName() {
+  return lastTrackedName;
+}
+
 export function track(name: FunnelEventName | string, props?: Record<string, unknown>, path?: string) {
   if (typeof window === "undefined") return;
   const event = buildEvent(name, props, path);
+  if (name !== "heartbeat") lastTrackedName = name;
   persistLocalEvent(event);
   firePixels(event);
   ingestRef?.(event);

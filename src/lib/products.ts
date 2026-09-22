@@ -1,4 +1,5 @@
 import produtosJson from "../data-produtos.json";
+import { kitProducts } from "@/lib/kits";
 
 export interface Variation {
   id: number;
@@ -28,7 +29,7 @@ export const products = [...(produtosJson as unknown as Product[])].sort(
 );
 
 export function getProduct(id: number): Product | undefined {
-  return products.find((p) => p.id === id);
+  return products.find((p) => p.id === id) ?? kitProducts.find((p) => p.id === id);
 }
 
 export function formatBRL(value: string | number): string {

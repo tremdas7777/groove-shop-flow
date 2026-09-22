@@ -2,11 +2,12 @@ import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, type ReactNode } from "react";
 import { getPublicTrackingSettings, heartbeatVisitor, ingestStoreEvent } from "@/lib/admin-api";
 import type { PublicTrackingSettings } from "@/lib/admin";
-import { loadPublicSettings } from "@/lib/admin-local";
+import { loadPublicSettings, touchLocalPresence } from "@/lib/admin-local";
 import {
   captureAttribution,
   detectDevice,
   getAttribution,
+  getLastTrackedName,
   getSessionId,
   setEventIngest,
   track,
@@ -72,14 +73,14 @@ function injectPixels(settings: PublicTrackingSettings) {
     window.ttq.page();
   }
 
-  if (utmify.enabled) {
-    if (utmify.pixelId) window.pixelId = utmfy.pixelId;
+  if (utmfy.enabled) {
+    if (utmfy.pixelId) window.pixelId = utmfy.pixelId;
     ensureScript("https://cdn.utmify.com.br/scripts/utms/latest.js", {
       "data-utmify-prevent-xcod-sck": "",
       "data-utmify-prevent-subids": "",
       defer: "",
     });
-    if (utmify.pixelId) {
+    if (utmfy.pixelId) {
       ensureScript("https://cdn.utmify.com.br/scripts/pixel/pixel.js");
     }
   }
@@ -137,14 +138,25 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isAdminPath(pathname)) return;
     const beat = () => {
+      const payload = {
+        sessionId: getSessionId(),
+        path: window.location.pathname + window.location.search,
+        title: document.title,
+        device: detectDevice(),
+        attribution: getAttribution(),
+        lastEvent: getLastTrackedName(),
+        lastTs: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+      };
+      touchLocalPresence(payload);
       void heartbeatVisitor({
         data: {
-          sessionId: getSessionId(),
-          path: window.location.pathname + window.location.search,
-          title: document.title,
-          device: detectDevice(),
-          attribution: getAttribution(),
-          lastEvent: "heartbeat",
+          sessionId: payload.sessionId,
+          path: payload.path,
+          title: payload.title,
+          device: payload.device,
+          attribution: payload.attribution,
+          lastEvent: payload.lastEvent,
         },
       }).catch(() => undefined);
     };

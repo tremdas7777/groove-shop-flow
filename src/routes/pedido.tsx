@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { CheckoutShell } from "@/components/CheckoutShell";
 import {
@@ -20,6 +20,7 @@ export const Route = createFileRoute("/pedido")({
 });
 
 function OrderPage() {
+  const navigate = useNavigate();
   const [order, setOrder] = useState<OrderSummary | null>(() =>
     typeof window === "undefined" ? null : loadOrder(),
   );
@@ -43,12 +44,13 @@ function OrderPage() {
         if (result.pix.status === "paid" && !next.purchaseTracked) {
           track("purchase", {
             order_id: next.id,
+            event_id: next.id,
             value: next.total,
             content_ids: next.items.map((item) => String(item.id)),
             content_name: next.items.map((item) => item.title).join(", "),
           });
-          const marked = persistOrder({ ...next, purchaseTracked: true, status: "paid" });
-          setOrder(marked);
+          persistOrder({ ...next, purchaseTracked: true, status: "paid" });
+          void navigate({ to: "/obrigado" });
           return;
         }
         setOrder(next);
@@ -61,7 +63,13 @@ function OrderPage() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [order?.pix?.transactionId, order?.pix?.status]);
+  }, [order?.pix?.transactionId, order?.pix?.status, navigate]);
+
+  useEffect(() => {
+    if (!order) return;
+    const paid = order.status === "paid" || order.pix?.status === "paid";
+    if (paid) void navigate({ to: "/obrigado" });
+  }, [order, navigate]);
 
   const copyPix = async () => {
     if (!order?.pix?.qrcode) return;

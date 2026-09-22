@@ -13,7 +13,7 @@ import type { OrderSummary } from "@/lib/checkout";
 import type { AnalyticsEvent } from "@/lib/tracking";
 
 const MAX_EVENTS = 4000;
-const PRESENCE_TTL_MS = 45_000;
+const PRESENCE_TTL_MS = 90_000;
 
 interface Session {
   token: string;
@@ -28,6 +28,7 @@ interface Store {
   presence: Map<string, PresenceVisitor>;
   sessions: Session[];
   utmfyLast?: { at: string; ok: boolean; message: string };
+  metaLast?: { at: string; ok: boolean; message: string };
   loaded: boolean;
 }
 
@@ -73,6 +74,7 @@ async function persist() {
         events: store.events.slice(-MAX_EVENTS),
         orders: store.orders.slice(0, 500),
         utmfyLast: store.utmifyLast,
+        metaLast: store.metaLast,
       }),
     );
   } catch {
@@ -99,6 +101,7 @@ async function hydrate() {
     if (Array.isArray(data.events)) store.events = data.events;
     if (Array.isArray(data.orders)) store.orders = data.orders as OrderSummary[];
     if (data.utmifyLast) store.utmifyLast = data.utmifyLast;
+    if (data.metaLast) store.metaLast = data.metaLast;
   } catch {
     // primeira execução
   }
@@ -110,8 +113,9 @@ async function hydrate() {
 }
 
 function publicSettings(): PublicTrackingSettings {
+  const { metaAccessToken: _token, ...pixels } = store.settings.pixels;
   return {
-    pixels: { ...store.settings.pixels },
+    pixels,
     utmfy: {
       enabled: store.settings.utmify.enabled,
       pixelId: store.settings.utmify.pixelId,
@@ -119,14 +123,21 @@ function publicSettings(): PublicTrackingSettings {
   };
 }
 
+function maskSecret(value: string) {
+  return value ? `••••${value.slice(-4)}` : "";
+}
+
 function maskSettings(): AdminSettings {
-  const token = store.settings.utmify.apiToken;
   return {
     ...store.settings,
     hasPin: Boolean(store.pinHash),
+    pixels: {
+      ...store.settings.pixels,
+      metaAccessToken: maskSecret(store.settings.pixels.metaAccessToken),
+    },
     utmfy: {
       ...store.settings.utmify,
-      apiToken: token ? `••••${token.slice(-4)}` : "",
+      apiToken: maskSecret(store.settings.utmify.apiToken),
     },
   };
 }
@@ -219,6 +230,62 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
   }
 }
 
+async function hashUser(value: string) {
+  return sha256(value.trim().toLowerCase());
+}
+
+async function sendMetaCapi(order: OrderSummary, eventName: "Purchase" | "AddPaymentInfo" | "InitiateCheckout") {
+  const pixelId = store.settings.pixels.metaPixelId.trim();
+  const token = store.settings.pixels.metaAccessToken.trim();
+  if (!store.settings.pixels.metaEnabled || !pixelId || !token || token.includes("•")) return;
+  const phone = order.data.phone.replace(/\D/g, "");
+  const payload = {
+    data: [
+      {
+        event_name: eventName,
+        event_time: Math.floor(Date.now() / 1000),
+        event_id: order.id,
+        action_source: "website",
+        user_data: {
+          em: [await hashUser(order.data.email)],
+          ph: phone ? [await hashUser(phone)] : undefined,
+          fn: order.data.firstName ? [await hashUser(order.data.firstName)] : undefined,
+          ln: order.data.lastName ? [await hashUser(order.data.lastName)] : undefined,
+          external_id: order.sessionId ? [await hashUser(order.sessionId)] : undefined,
+          country: [await hashUser("br")],
+        },
+        custom_data: {
+          currency: "BRL",
+          value: order.total,
+          content_ids: order.items.map((item) => String(item.id)),
+          content_type: "product",
+          order_id: order.id,
+          num_items: order.items.reduce((acc, item) => acc + item.qty, 0),
+        },
+      },
+    ],
+  };
+  try {
+    const res = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(pixelId)}/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, access_token: token }),
+    });
+    const body = await res.text();
+    store.metaLast = {
+      at: new Date().toISOString(),
+      ok: res.ok,
+      message: res.ok ? `Meta ${eventName} · ${order.id}` : body.slice(0, 240) || `HTTP ${res.status}`,
+    };
+  } catch (error) {
+    store.metaLast = {
+      at: new Date().toISOString(),
+      ok: false,
+      message: error instanceof Error ? error.message : "Falha no Meta CAPI",
+    };
+  }
+}
+
 async function sendWebhook(kind: string, payload: unknown) {
   const url = store.settings.webhookUrl.trim();
   if (!url) return;
@@ -248,6 +315,7 @@ function snapshot(): AdminSnapshot {
     orders: store.orders,
     visitors: [...store.presence.values()].sort((a, b) => b.lastTs.localeCompare(a.lastTs)),
     utmfyLast: store.utmifyLast,
+    metaLast: store.metaLast,
   };
 }
 
@@ -305,13 +373,17 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
     await hydrate();
     if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
     const prev = store.presence.get(data.sessionId);
+    const lastEvent =
+      data.lastEvent === "heartbeat" && prev?.lastEvent && prev.lastEvent !== "heartbeat"
+        ? prev.lastEvent
+        : data.lastEvent;
     store.presence.set(data.sessionId, {
       sessionId: data.sessionId,
       path: data.path,
       title: data.title,
       device: data.device,
       attribution: data.attribution ?? {},
-      lastEvent: data.lastEvent,
+      lastEvent,
       lastTs: new Date().toISOString(),
       startedAt: prev?.startedAt ?? new Date().toISOString(),
     });
@@ -329,6 +401,8 @@ export const upsertStoreOrder = createServerFn({ method: "POST" })
       const prevStatus = prev?.status ?? prev?.pix?.status;
       if (!prev) {
         await sendUtmfy(data.order, nextStatus === "paid" ? "paid" : "waiting_payment");
+        if (nextStatus === "paid") await sendMetaCapi(data.order, "Purchase");
+        else await sendMetaCapi(data.order, "AddPaymentInfo");
         await sendWebhook("order.created", data.order);
       } else if (prevStatus !== nextStatus) {
         const mapped =
@@ -340,6 +414,7 @@ export const upsertStoreOrder = createServerFn({ method: "POST" })
                 ? "refused"
                 : "waiting_payment";
         await sendUtmfy(data.order, mapped);
+        if (nextStatus === "paid") await sendMetaCapi(data.order, "Purchase");
         await sendWebhook("order.updated", data.order);
       }
     }
@@ -409,11 +484,15 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
       !data.settings.utmify.apiToken || data.settings.utmify.apiToken.includes("•")
         ? store.settings.utmify.apiToken
         : data.settings.utmify.apiToken;
+    const keepMetaToken =
+      !data.settings.pixels.metaAccessToken || data.settings.pixels.metaAccessToken.includes("•")
+        ? store.settings.pixels.metaAccessToken
+        : data.settings.pixels.metaAccessToken;
     store.settings = {
       ...store.settings,
       storeName: data.settings.storeName,
       webhookUrl: data.settings.webhookUrl,
-      pixels: { ...emptyPixels, ...data.settings.pixels },
+      pixels: { ...emptyPixels, ...data.settings.pixels, metaAccessToken: keepMetaToken },
       utmfy: { ...data.settings.utmify, apiToken: keepToken },
       hasPin: Boolean(store.pinHash),
     };
@@ -460,6 +539,7 @@ export const updateAdminOrder = createServerFn({ method: "POST" })
             ? "refused"
             : "waiting_payment";
     await sendUtmfy(order, mapped);
+    if (order.status === "paid") await sendMetaCapi(order, "Purchase");
     await sendWebhook("order.updated", order);
     await persist();
     return order;
@@ -517,6 +597,50 @@ export const testUtmifyConnection = createServerFn({ method: "POST" })
     store.settings.utmify.testMode = previous;
     await persist();
     return store.utmifyLast;
+  });
+
+export const testMetaConnection = createServerFn({ method: "POST" })
+  .validator(z.object({ token: z.string() }))
+  .handler(async ({ data }) => {
+    await hydrate();
+    requireSession(data.token);
+    if (!store.settings.pixels.metaPixelId) throw new Error("Cole o Pixel ID da Meta.");
+    if (!store.settings.pixels.metaAccessToken) throw new Error("Cole o token da Meta.");
+    const dummy: OrderSummary = {
+      id: `METATEST${Date.now().toString().slice(-6)}`,
+      createdAt: new Date().toISOString(),
+      data: {
+        email: "teste@loja.local",
+        firstName: "Teste",
+        lastName: "Meta",
+        cpf: "00000000000",
+        phone: "11999999999",
+        cep: "01310100",
+        street: "Av. Paulista",
+        number: "1000",
+        complement: "",
+        neighborhood: "Bela Vista",
+        city: "São Paulo",
+        state: "SP",
+        shippingMethod: "gratis",
+        payment: "pix",
+        cardNumber: "",
+        cardName: "",
+        cardExpiry: "",
+        cardCvv: "",
+        coupon: "",
+        newsletter: false,
+      },
+      items: [{ id: 1, qty: 1, title: "Teste Meta CAPI", price: 1, photo: "" }],
+      subtotal: 1,
+      shipping: 0,
+      discount: 0,
+      total: 1,
+      status: "pending",
+    };
+    await sendMetaCapi(dummy, "InitiateCheckout");
+    await persist();
+    return store.metaLast;
   });
 
 export const seedAdminDemo = createServerFn({ method: "POST" })

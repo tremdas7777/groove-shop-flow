@@ -10,7 +10,6 @@ import {
   Radio,
   Settings,
   ShoppingBag,
-  Smartphone,
   Target,
 } from "lucide-react";
 import {
@@ -31,21 +30,25 @@ import {
   getAdminSnapshot,
   saveAdminSettings,
   seedAdminDemo,
+  testMetaConnection,
   testUtmifyConnection,
   updateAdminOrder,
 } from "@/lib/admin-api";
 import {
+  PERIODS,
   buildCampaigns,
   buildFunnel,
+  buildLiveSessions,
   defaultSettings,
+  inPeriod,
   money,
   orderStatus,
-  pageLabel,
   relativeTime,
   sourceLabel,
   statusLabel,
   type AdminSettings,
   type AdminSnapshot,
+  type Period,
 } from "@/lib/admin";
 import { loadLocalEvents } from "@/lib/tracking";
 import { loadOrders, type OrderSummary } from "@/lib/checkout";
@@ -53,6 +56,7 @@ import { formatBRL, products } from "@/lib/products";
 import { cn } from "@/lib/utils";
 import {
   TOKEN_KEY,
+  loadLocalPresence,
   loadLocalSettings,
   localChangePin,
   localCheckPin,
@@ -60,6 +64,7 @@ import {
   saveLocalSettings,
   seedLocalDemo,
 } from "@/lib/admin-local";
+import { LiveView } from "@/components/admin/LiveView";
 
 type Tab =
   | "visao"
@@ -72,11 +77,11 @@ type Tab =
   | "utmify"
   | "config";
 
-const tabs: { id: Tab; label: string; icon: typeof Eye }[] = [
+const tabs: { id: Tab; label: string; icon: typeof Radio }[] = [
   { id: "visao", label: "Visão geral", icon: LayoutDashboard },
   { id: "live", label: "Live view", icon: Radio },
   { id: "pedidos", label: "Pedidos", icon: ShoppingBag },
-  { id: "funil", label: "Funil", icon: Filter },
+  { id: "funil", label: "Progresso", icon: Filter },
   { id: "trafego", label: "Tráfego / UTMs", icon: Megaphone },
   { id: "produtos", label: "Produtos", icon: Package },
   { id: "pixels", label: "Pixels", icon: Target },
@@ -91,6 +96,7 @@ export function AdminApp() {
   const [authError, setAuthError] = useState("");
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>("visao");
+  const [period, setPeriod] = useState<Period>("7d");
   const [snap, setSnap] = useState<AdminSnapshot | null>(null);
   const [settings, setSettings] = useState<AdminSettings>(defaultSettings);
 
@@ -204,11 +210,15 @@ export function AdminApp() {
   const events = snap?.events ?? [];
   const orders = snap?.orders ?? [];
   const visitors = snap?.visitors ?? [];
-  const paid = orders.filter((order) => orderStatus(order) === "paid");
-  const pending = orders.filter((order) => orderStatus(order) === "pending");
+  const scopedEvents = events.filter((event) => inPeriod(event.ts, period));
+  const scopedOrders = orders.filter((order) => inPeriod(order.createdAt, period));
+  const liveSessions = buildLiveSessions(events, orders, visitors);
+  const onlineNow = liveSessions.filter((session) => session.online).length;
+  const paid = scopedOrders.filter((order) => orderStatus(order) === "paid");
+  const pending = scopedOrders.filter((order) => orderStatus(order) === "pending");
   const revenue = paid.reduce((acc, order) => acc + order.total, 0);
   const pixRevenue = pending.reduce((acc, order) => acc + order.total, 0);
-  const sessions = new Set(events.map((event) => event.sessionId)).size;
+  const sessions = new Set(scopedEvents.map((event) => event.sessionId)).size;
   const conv = sessions ? (paid.length / sessions) * 100 : 0;
 
   return (
@@ -234,9 +244,9 @@ export function AdminApp() {
               >
                 <item.icon className="h-4 w-4" />
                 {item.label}
-                {item.id === "live" && visitors.length > 0 && (
+                {item.id === "live" && onlineNow > 0 && (
                   <span className="ml-auto rounded-full bg-emerald-500/20 px-1.5 text-[10px] text-emerald-300">
-                    {visitors.length}
+                    {onlineNow}
                   </span>
                 )}
                 {item.id === "pedidos" && pending.length > 0 && (
@@ -260,16 +270,28 @@ export function AdminApp() {
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3 lg:px-6">
+          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3 lg:px-6">
             <div className="flex items-center gap-2 text-sm text-white/60">
               <span className="relative flex h-2.5 w-2.5">
                 <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400 opacity-60" />
                 <span className="relative h-2.5 w-2.5 rounded-full bg-emerald-400" />
               </span>
-              {visitors.length} online
+              {onlineNow} online
             </div>
-            <div className="hidden text-xs text-white/40 sm:block">
-              {sessions} sessões · {money(revenue)} pagos · {pending.length} PIX abertos
+            <div className="flex flex-wrap items-center gap-1.5">
+              {PERIODS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setPeriod(item.id)}
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-[11px]",
+                    period === item.id ? "bg-white text-[#070b14]" : "bg-white/8 text-white/60 hover:bg-white/12",
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
             </div>
             <select
               value={tab}
@@ -293,24 +315,26 @@ export function AdminApp() {
                 paid={paid.length}
                 pending={pending.length}
                 conv={conv}
-                events={events}
-                orders={orders}
+                events={scopedEvents}
+                orders={scopedOrders}
               />
             )}
-            {tab === "live" && <LiveView visitors={visitors} events={events} />}
+            {tab === "live" && <LiveView visitors={visitors} events={events} orders={orders} />}
             {tab === "pedidos" && (
               <OrdersPanel
-                orders={orders}
+                orders={scopedOrders}
                 token={token}
                 onChange={(next) => setSnap((prev) => (prev ? { ...prev, orders: prev.orders.map((o) => (o.id === next.id ? next : o)) } : prev))}
               />
             )}
-            {tab === "funil" && <FunnelPanel events={events} orders={orders} />}
-            {tab === "trafego" && <TrafficPanel events={events} orders={orders} />}
-            {tab === "produtos" && <ProductsPanel events={events} orders={orders} />}
+            {tab === "funil" && <FunnelPanel events={scopedEvents} orders={scopedOrders} />}
+            {tab === "trafego" && <TrafficPanel events={scopedEvents} orders={scopedOrders} />}
+            {tab === "produtos" && <ProductsPanel events={scopedEvents} orders={scopedOrders} />}
             {tab === "pixels" && (
               <PixelsPanel
                 settings={settings}
+                last={snap?.metaLast}
+                token={token}
                 onChange={setSettings}
                 onSave={() => void saveSettings(token, settings, setSettings)}
               />
@@ -362,6 +386,7 @@ export function AdminApp() {
 function mergeLocal(snap: AdminSnapshot): AdminSnapshot {
   const localEvents = loadLocalEvents();
   const localOrders = loadOrders();
+  const localVisitors = loadLocalPresence();
   const events = [...snap.events];
   for (const event of localEvents) {
     if (!events.some((item) => item.id === event.id)) events.push(event);
@@ -370,9 +395,16 @@ function mergeLocal(snap: AdminSnapshot): AdminSnapshot {
   for (const order of localOrders) {
     if (!orders.some((item) => item.id === order.id)) orders.push(order);
   }
+  const visitors = [...snap.visitors];
+  for (const visitor of localVisitors) {
+    const index = visitors.findIndex((item) => item.sessionId === visitor.sessionId);
+    if (index === -1) visitors.push(visitor);
+    else if (visitors[index] && visitor.lastTs > visitors[index].lastTs) visitors[index] = visitor;
+  }
   events.sort((a, b) => a.ts.localeCompare(b.ts));
   orders.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  return { ...snap, events, orders };
+  visitors.sort((a, b) => b.lastTs.localeCompare(a.lastTs));
+  return { ...snap, events, orders, visitors };
 }
 
 async function saveSettings(
@@ -497,65 +529,6 @@ function Overview({
         </div>
       </div>
       <RecentOrders orders={orders.slice(0, 6)} />
-    </div>
-  );
-}
-
-function LiveView({
-  visitors,
-  events,
-}: {
-  visitors: AdminSnapshot["visitors"];
-  events: AdminSnapshot["events"];
-}) {
-  const feed = [...events].reverse().slice(0, 40);
-  return (
-    <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-      <section>
-        <h2 className="text-xl font-semibold">Quem está na loja agora</h2>
-        <p className="text-sm text-white/50">Presença atualizada a cada poucos segundos.</p>
-        <div className="mt-4 space-y-2">
-          {visitors.length === 0 && <Empty text="Ninguém online neste instante. Abra a loja em outra aba." />}
-          {visitors.map((visitor) => (
-            <div
-              key={visitor.sessionId}
-              className="flex items-start justify-between gap-3 rounded-2xl border border-white/10 bg-[#10182a] p-4"
-            >
-              <div>
-                <p className="font-medium">{pageLabel(visitor.path)}</p>
-                <p className="mt-1 text-xs text-white/45">
-                  {sourceLabel(visitor.attribution)}
-                  {visitor.attribution.utm_campaign ? ` · ${visitor.attribution.utm_campaign}` : ""}
-                </p>
-                <p className="mt-1 text-[11px] text-white/35">{visitor.path}</p>
-              </div>
-              <div className="text-right text-xs text-white/50">
-                <p className="inline-flex items-center gap-1">
-                  <Smartphone className="h-3.5 w-3.5" /> {visitor.device}
-                </p>
-                <p className="mt-1">{relativeTime(visitor.lastTs)}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-      <section>
-        <h2 className="text-xl font-semibold">Feed de eventos</h2>
-        <div className="mt-4 space-y-2">
-          {feed.length === 0 && <Empty text="Os cliques e páginas da loja aparecem aqui." />}
-          {feed.map((event) => (
-            <div key={event.id} className="rounded-xl border border-white/8 bg-white/4 px-3 py-2 text-sm">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium text-[#E0B761]">{event.name}</span>
-                <span className="text-[11px] text-white/40">{relativeTime(event.ts)}</span>
-              </div>
-              <p className="text-xs text-white/50">
-                {pageLabel(event.path)} · {event.device} · {sourceLabel(event.attribution)}
-              </p>
-            </div>
-          ))}
-        </div>
-      </section>
     </div>
   );
 }
@@ -740,28 +713,75 @@ function OrderDrawer({
 
 function FunnelPanel({ events, orders }: { events: AdminSnapshot["events"]; orders: OrderSummary[] }) {
   const steps = buildFunnel(events, orders);
+  const leakIndex = steps.reduce((worst, step, index) => {
+    if (index === 0) return worst;
+    const prevDrop = steps[worst]?.id === "sessions" ? 0 : 100 - steps[worst].rateFromPrev;
+    const drop = 100 - step.rateFromPrev;
+    return drop > prevDrop ? index : worst;
+  }, 1);
+  const paid = steps[steps.length - 1];
   return (
     <div>
-      <h2 className="text-xl font-semibold">Funil detalhado</h2>
-      <p className="text-sm text-white/50">Onde o tráfego entra e onde abandona até o PIX pago.</p>
+      <h2 className="text-xl font-semibold">Progresso do cliente</h2>
+      <p className="text-sm text-white/50">
+        Quantas sessões avançam em cada etapa e onde o funil vaza até o PIX pago.
+      </p>
+      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+        <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+          <p className="text-[11px] uppercase tracking-wide text-white/45">Chegam ao checkout</p>
+          <p className="mt-2 text-2xl font-semibold">
+            {steps.find((step) => step.id === "begin_checkout")?.rateFromStart.toFixed(1) ?? "0.0"}%
+          </p>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+          <p className="text-[11px] uppercase tracking-wide text-white/45">Geram PIX</p>
+          <p className="mt-2 text-2xl font-semibold">
+            {steps.find((step) => step.id === "generate_pix")?.rateFromStart.toFixed(1) ?? "0.0"}%
+          </p>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+          <p className="text-[11px] uppercase tracking-wide text-white/45">Pagam</p>
+          <p className="mt-2 text-2xl font-semibold text-emerald-300">{paid?.rateFromStart.toFixed(1) ?? "0.0"}%</p>
+        </div>
+      </div>
       <div className="mt-6 space-y-3">
-        {steps.map((step) => (
-          <div key={step.id} className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
-            <div className="flex items-center justify-between text-sm">
-              <span className="font-medium">{step.label}</span>
-              <span className="text-white/60">
-                {step.count} · {step.rateFromStart.toFixed(1)}% do topo
-                {step.id !== "sessions" && ` · ${step.rateFromPrev.toFixed(1)}% do passo anterior`}
-              </span>
+        {steps.map((step, index) => {
+          const prev = index === 0 ? step.count : steps[index - 1].count;
+          const dropped = Math.max(0, prev - step.count);
+          const dropRate = prev ? (dropped / prev) * 100 : 0;
+          const leak = index === leakIndex && dropped > 0;
+          return (
+            <div
+              key={step.id}
+              className={cn(
+                "rounded-2xl border bg-[#10182a] p-4",
+                leak ? "border-amber-400/40" : "border-white/10",
+              )}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <span className="font-medium">
+                  {index + 1}. {step.label}
+                </span>
+                <span className="text-white/60">
+                  {step.count} pessoas · {step.rateFromStart.toFixed(1)}% do topo
+                </span>
+              </div>
+              <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-[#001E62] to-[#E0B761]"
+                  style={{ width: `${Math.max(2, Math.min(100, step.rateFromStart || (step.count ? 100 : 0)))}%` }}
+                />
+              </div>
+              {index > 0 && (
+                <p className={cn("mt-2 text-xs", leak ? "text-amber-200" : "text-white/45")}>
+                  {dropped > 0
+                    ? `${dropped} ${dropped === 1 ? "abandonou" : "abandonaram"} aqui (${dropRate.toFixed(0)}% do passo anterior)${leak ? " · maior vazamento" : ""}`
+                    : "Ninguém abandonou neste passo"}
+                </p>
+              )}
             </div>
-            <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-[#001E62] to-[#E0B761]"
-                style={{ width: `${Math.max(2, Math.min(100, step.rateFromStart || (step.count ? 100 : 0)))}%` }}
-              />
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -866,10 +886,14 @@ function ProductsPanel({ events, orders }: { events: AdminSnapshot["events"]; or
 
 function PixelsPanel({
   settings,
+  last,
+  token,
   onChange,
   onSave,
 }: {
   settings: AdminSettings;
+  last?: AdminSnapshot["metaLast"];
+  token: string;
   onChange: (settings: AdminSettings) => void;
   onSave: () => void;
 }) {
@@ -881,7 +905,7 @@ function PixelsPanel({
       <div>
         <h2 className="text-xl font-semibold">Pixels de tráfego</h2>
         <p className="text-sm text-white/50">
-          Os IDs entram no site inteiro: PageView, ViewContent, AddToCart, InitiateCheckout e Purchase.
+          Pixel no navegador + token da API de Conversões da Meta para Purchase no servidor.
         </p>
       </div>
       <PixelField
@@ -892,6 +916,36 @@ function PixelsPanel({
         value={p.metaPixelId}
         onValue={(metaPixelId) => set({ metaPixelId })}
         placeholder="000000000000000"
+        extra={
+          <>
+            <Field
+              label="Token da API de Conversões"
+              value={p.metaAccessToken}
+              onChange={(metaAccessToken) => set({ metaAccessToken })}
+              placeholder="EAAxxxxxxxx"
+              type="password"
+            />
+            {last && (
+              <p className={cn("text-sm", last.ok ? "text-emerald-300" : "text-red-300")}>
+                Último envio CAPI: {last.message} · {relativeTime(last.at)}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  const result = await testMetaConnection({ data: { token } });
+                  toast[result?.ok ? "success" : "error"](result?.message ?? "Sem retorno");
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : "Falha no teste Meta");
+                }
+              }}
+              className="h-11 rounded-xl border border-white/15 px-4 text-sm hover:bg-white/5"
+            >
+              Testar Meta CAPI
+            </button>
+          </>
+        }
       />
       <PixelField
         title="Google Analytics 4"

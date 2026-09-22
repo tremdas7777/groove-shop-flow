@@ -1,10 +1,17 @@
-import { defaultSettings, type AdminSettings, type PublicTrackingSettings } from "@/lib/admin";
+import {
+  defaultSettings,
+  ONLINE_MS,
+  type AdminSettings,
+  type PresenceVisitor,
+  type PublicTrackingSettings,
+} from "@/lib/admin";
 import { loadOrders, type OrderSummary } from "@/lib/checkout";
 import { loadLocalEvents, type AnalyticsEvent } from "@/lib/tracking";
 
 const PIN_KEY = "asics-admin-pin-hash";
 const SETTINGS_KEY = "asics-admin-settings";
 const TOKEN_KEY = "asics-admin-token";
+const PRESENCE_KEY = "asics-local-presence";
 
 export { TOKEN_KEY };
 
@@ -70,8 +77,9 @@ export function loadPublicSettings(): PublicTrackingSettings | null {
       utmfy.enabled ||
       Boolean(pixels.customHeadHtml);
     if (!pixelsOn) return null;
+    const { metaAccessToken: _token, ...publicPixels } = pixels;
     return {
-      pixels,
+      pixels: publicPixels,
       utmfy: { enabled: utmfy.enabled, pixelId: utmfy.pixelId },
     };
   } catch {
@@ -89,6 +97,32 @@ export function localSnapshot(settings: AdminSettings): {
     events: loadLocalEvents(),
     orders: loadOrders(),
   };
+}
+
+export function touchLocalPresence(visitor: PresenceVisitor) {
+  if (typeof window === "undefined") return;
+  const existing = loadLocalPresence(true);
+  const prev = existing.find((item) => item.sessionId === visitor.sessionId);
+  const nextVisitor = { ...visitor, startedAt: prev?.startedAt ?? visitor.startedAt };
+  const next = [nextVisitor, ...existing.filter((item) => item.sessionId !== visitor.sessionId)].slice(0, 80);
+  try {
+    window.localStorage.setItem(PRESENCE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+}
+
+export function loadLocalPresence(includeExpired = false): PresenceVisitor[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(PRESENCE_KEY);
+    const all = raw ? (JSON.parse(raw) as PresenceVisitor[]) : [];
+    if (includeExpired) return all;
+    const cutoff = Date.now() - ONLINE_MS;
+    return all.filter((visitor) => new Date(visitor.lastTs).getTime() >= cutoff);
+  } catch {
+    return [];
+  }
 }
 
 export function seedLocalDemo() {
@@ -117,12 +151,22 @@ export function seedLocalDemo() {
       });
     };
     push("page_view", 70 - i, "/");
-    if (i % 2 === 0) push("view_item", 60 - i, "/produto/1", { content_ids: ["1"], value: 300 });
-    if (i % 3 === 0) push("add_to_cart", 50 - i, "/produto/1", { content_ids: ["1"], value: 300 });
+    if (i % 2 === 0) {
+      push("view_item", 60 - i, "/produto/20014", {
+        content_ids: ["20014"],
+        content_name: "Tênis Masculino ASICS Novablast 5 Platium",
+        value: 297,
+      });
+    }
+    if (i % 3 === 0) {
+      push("add_to_cart", 50 - i, "/produto/20014", { content_ids: ["20014"], value: 297 });
+    }
     if (i % 4 === 0) push("view_cart", 40 - i, "/carrinho");
     if (i % 5 === 0) push("begin_checkout", 30 - i, "/checkout");
+    if (i % 6 === 0) push("checkout_identify", 25 - i, "/checkout", { email: `cliente${i}@email.com` });
+    if (i % 8 === 0) push("checkout_shipping", 20 - i, "/checkout", { shipping: "padrao" });
     if (i % 6 === 0) {
-      push("generate_pix", 15 - i, "/pedido", { order_id: `ASDEMO${i}`, value: 319.9 });
+      push("generate_pix", 15 - i, "/pedido", { order_id: `ASDEMO${i}`, value: 316.9 });
       const paid = i % 12 === 0;
       if (paid) push("purchase", 8 - i, "/pedido", { order_id: `ASDEMO${i}`, value: 319.9 });
       orders.unshift({
@@ -173,4 +217,21 @@ export function seedLocalDemo() {
   }
   window.localStorage.setItem("asics-analytics-events", JSON.stringify(events.slice(-800)));
   window.localStorage.setItem("asics-orders-ledger", JSON.stringify(orders.slice(0, 500)));
+  const live = [0, 3, 6, 8, 12]
+    .map((i) => {
+      const last = events.filter((event) => event.sessionId === `demo_${i}`).at(-1);
+      if (!last) return null;
+      return {
+        sessionId: last.sessionId,
+        path: last.path,
+        title: last.title,
+        device: last.device,
+        attribution: last.attribution,
+        lastEvent: last.name,
+        lastTs: new Date().toISOString(),
+        startedAt: events.find((event) => event.sessionId === last.sessionId)?.ts ?? last.ts,
+      } satisfies PresenceVisitor;
+    })
+    .filter((item): item is PresenceVisitor => Boolean(item));
+  window.localStorage.setItem(PRESENCE_KEY, JSON.stringify(live));
 }

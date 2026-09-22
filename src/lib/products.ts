@@ -23,7 +23,9 @@ export interface Product {
   variacoes?: Variation[];
 }
 
-export const products = produtosJson as unknown as Product[];
+export const products = [...(produtosJson as unknown as Product[])].sort(
+  (a, b) => parsePrice(a.preco) - parsePrice(b.preco),
+);
 
 export function getProduct(id: number): Product | undefined {
   return products.find((p) => p.id === id);

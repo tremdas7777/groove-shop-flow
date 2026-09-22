@@ -103,6 +103,7 @@ export interface OrderSummary {
     paid?: boolean;
     refused?: boolean;
     refunded?: boolean;
+    createdAt?: string;
   };
 }
 

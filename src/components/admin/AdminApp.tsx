@@ -144,7 +144,13 @@ export function AdminApp() {
       });
       if (!cancelled) setSnap((prev) => prev ?? local);
       try {
-        const next = await getAdminSnapshot({ data: { token } });
+        const localToken = loadLocalSettings().utmfy?.apiToken ?? "";
+        const next = await getAdminSnapshot({
+          data: {
+            token,
+            utmfyToken: localToken && !localToken.includes("•") ? localToken : undefined,
+          },
+        });
         if (cancelled) return;
         setSnap(mergeLocal(next));
         const mergedSettings = keepTypedSecrets(loadLocalSettings(), next.settings);
@@ -1204,8 +1210,9 @@ function UtmifyPanel({
       <div>
         <h2 className="text-xl font-semibold">UTMify</h2>
         <p className="text-sm text-white/50">
-          O pixel já está em todas as páginas. O token salvo no admin é o que a UTMify usa para
-          rastrear visitas, PIX gerado e pagamento em{" "}
+          Salve o token aqui. PIX gerado entra como pendente e o pagamento atualiza a mesma venda.
+          Sem o token no servidor a UTMify não recebe faturamento. Depois de salvar, deixe o admin
+          aberto uns segundos para reenviar os pedidos que faltam em{" "}
           <a className="underline" href="https://app.utmify.com.br" target="_blank" rel="noreferrer">
             app.utmify.com.br
           </a>

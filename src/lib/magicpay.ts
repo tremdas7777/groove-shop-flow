@@ -202,7 +202,19 @@ export const getMagicPayPix = createServerFn({ method: "GET" })
       const body = await magicPayFetch(
         `/v1/transactions/${encodeURIComponent(String(data.transactionId))}`,
       );
-      return { ok: true as const, pix: parsePix(body) };
+      const pix = parsePix(body);
+      if (pix.status === "paid") {
+        try {
+          const { commitStoreOrder } = await import("@/lib/admin-api");
+          const fromGateway = orderFromMagicPayTx(body);
+          if (fromGateway) {
+            await commitStoreOrder({ ...fromGateway, pix, status: "paid" }, true);
+          }
+        } catch {
+          // o /pedido ainda tenta gravar o pagamento
+        }
+      }
+      return { ok: true as const, pix };
     } catch (error) {
       return {
         ok: false as const,

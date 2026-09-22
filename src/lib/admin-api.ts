@@ -34,6 +34,27 @@ const EVENT_PREFIX = "https://asics-admin.internal/event/";
 const PRESENCE_PREFIX = "https://asics-admin.internal/presence/";
 const ORDER_PREFIX = "https://asics-admin.internal/order/";
 const SESSION_PREFIX = "https://asics-admin.internal/session/";
+const UTMIFY_PREFIX = "https://asics-admin.internal/utmfy/";
+const UTMIFY_TOKEN_URL = "https://asics-admin.internal/utmfy-token";
+
+type UtmfyStatus = "waiting_payment" | "paid" | "refused" | "refunded";
+type UtmfySent = NonNullable<OrderSummary["utmfySent"]>;
+
+function mergeUtmfySent(left?: UtmfySent, right?: UtmfySent): UtmfySent {
+  return {
+    waiting_payment: Boolean(left?.waiting_payment || right?.waiting_payment),
+    paid: Boolean(left?.paid || right?.paid),
+    refused: Boolean(left?.refused || right?.refused),
+    refunded: Boolean(left?.refunded || right?.refunded),
+    createdAt: left?.createdAt || right?.createdAt,
+  };
+}
+
+function earlierIso(left?: string, right?: string) {
+  if (!left) return right;
+  if (!right) return left;
+  return left <= right ? left : right;
+}
 
 function defaultCache(): Cache | null {
   try {
@@ -101,7 +122,13 @@ async function persistTrafficShards(input: {
 }) {
   if (input.event?.id) await putShard(`${EVENT_PREFIX}${input.event.id}`, input.event);
   if (input.visitor?.sessionId) await putShard(`${PRESENCE_PREFIX}${input.visitor.sessionId}`, input.visitor);
-  if (input.order?.id) await putShard(`${ORDER_PREFIX}${input.order.id}`, input.order);
+  if (input.order?.id) {
+    await putShard(`${ORDER_PREFIX}${input.order.id}`, input.order);
+    const sent = mergeUtmfySent(store.utmfyClaims.get(input.order.id), input.order.utmfySent);
+    if (sent.waiting_payment || sent.paid || sent.refused || sent.refunded) {
+      await putShard(`${UTMIFY_PREFIX}${input.order.id}`, sent);
+    }
+  }
   if (input.session?.token) await putShard(`${SESSION_PREFIX}${input.session.token}`, input.session);
 }
 
@@ -131,6 +158,7 @@ async function readShards(): Promise<PersistedState | null> {
     const presence: PresenceVisitor[] = [];
     const orders: OrderSummary[] = [];
     const sessions: Session[] = [];
+    const claims: Record<string, UtmfySent> = {};
     await Promise.all(
       [...keys.values()].map(async (req) => {
         const url = req.url;
@@ -142,13 +170,22 @@ async function readShards(): Promise<PersistedState | null> {
           else if (url.startsWith(PRESENCE_PREFIX) && data?.sessionId) presence.push(data);
           else if (url.startsWith(ORDER_PREFIX) && data?.id) orders.push(data);
           else if (url.startsWith(SESSION_PREFIX) && data?.token) sessions.push(data);
+          else if (url.startsWith(UTMIFY_PREFIX) && data && typeof data === "object") {
+            const orderId = url.slice(UTMIFY_PREFIX.length);
+            if (orderId) {
+              const current = claims[orderId] ?? {};
+              claims[orderId] = mergeUtmfySent(current, data as UtmfySent);
+            }
+          }
         } catch {
           // shard inválido
         }
       }),
     );
-    if (!events.length && !presence.length && !orders.length && !sessions.length) return null;
-    return { events, presence, orders, sessions };
+    if (!events.length && !presence.length && !orders.length && !sessions.length && !Object.keys(claims).length) {
+      return null;
+    }
+    return { events, presence, orders, sessions, utmfyClaims: claims };
   } catch {
     return null;
   }
@@ -166,6 +203,7 @@ interface Store {
   orders: OrderSummary[];
   presence: Map<string, PresenceVisitor>;
   sessions: Session[];
+  utmfyClaims: Map<string, UtmfySent>;
   utmfyLast?: { at: string; ok: boolean; message: string };
   metaLast?: { at: string; ok: boolean; message: string };
   loaded: boolean;
@@ -178,6 +216,7 @@ interface PersistedState {
   orders?: OrderSummary[];
   presence?: PresenceVisitor[];
   sessions?: Session[];
+  utmfyClaims?: Record<string, UtmfySent>;
   utmfyLast?: Store["utmfyLast"];
   metaLast?: Store["metaLast"];
   writtenAt?: number;
@@ -192,9 +231,11 @@ const store: Store = globalStore.__asicsAdminStore ?? {
   orders: [],
   presence: new Map(),
   sessions: [],
+  utmfyClaims: new Map(),
   loaded: false,
 };
 globalStore.__asicsAdminStore = store;
+store.utmfyClaims ??= new Map();
 
 let persistChain: Promise<void> = Promise.resolve();
 
@@ -220,6 +261,7 @@ function serializeState(): PersistedState {
     orders: store.orders.slice(0, MAX_ORDERS),
     presence: [...store.presence.values()],
     sessions: store.sessions.filter((session) => session.expiresAt > Date.now()),
+    utmfyClaims: Object.fromEntries(store.utmfyClaims),
     utmfyLast: store.utmfyLast,
     metaLast: store.metaLast,
     writtenAt: Date.now(),
@@ -230,16 +272,32 @@ function hasSecret(value?: string) {
   return Boolean(value?.trim() && !value.includes("•"));
 }
 
+function envUtmfyToken() {
+  return (process.env.UTMIFY_API_TOKEN ?? process.env.UTMIFY_TOKEN ?? "").trim();
+}
+
 function mergeUtmfy(disk?: AdminSettings["utmfy"]) {
   const current = store.settings.utmfy ?? emptyUtmfy;
   const incoming = { ...emptyUtmfy, ...disk };
-  const apiToken = hasSecret(current.apiToken) ? current.apiToken : incoming.apiToken;
+  const apiToken = [current.apiToken, incoming.apiToken, envUtmfyToken()].find((value) => hasSecret(value)) ?? "";
   store.settings.utmfy = {
-    enabled: current.enabled || incoming.enabled || hasSecret(apiToken),
+    enabled: true,
     pixelId: current.pixelId || incoming.pixelId || UTMIFY_PIXEL_ID,
     apiToken,
     testMode: current.testMode || incoming.testMode,
   };
+}
+
+async function rememberUtmfyToken(token?: string) {
+  if (!hasSecret(token)) return;
+  store.settings.utmfy.apiToken = token.trim();
+  store.settings.utmfy.enabled = true;
+  await putShard(UTMIFY_TOKEN_URL, { apiToken: token.trim() });
+}
+
+async function loadUtmfyToken() {
+  const pinned = await getShard<{ apiToken?: string }>(UTMIFY_TOKEN_URL);
+  mergeUtmfy({ apiToken: pinned?.apiToken ?? "" });
 }
 
 function mergeVisitor(prev: PresenceVisitor | undefined, incoming: PresenceVisitor): PresenceVisitor {
@@ -277,7 +335,12 @@ function unionPersisted(left: PersistedState, right: PersistedState): PersistedS
     if (!order?.id) continue;
     const prev = orders.get(order.id);
     if (!prev || (order.createdAt ?? "") > (prev.createdAt ?? "") || order.status === "paid") {
-      orders.set(order.id, prev ? { ...prev, ...order } : order);
+      orders.set(
+        order.id,
+        prev
+          ? { ...prev, ...order, utmfySent: mergeUtmfySent(prev.utmfySent, order.utmfySent) }
+          : order,
+      );
     }
   }
   const presence = new Map<string, PresenceVisitor>();
@@ -299,6 +362,11 @@ function unionPersisted(left: PersistedState, right: PersistedState): PersistedS
     orders: [...orders.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, MAX_ORDERS),
     presence: [...presence.values()],
     sessions: [...sessions.values()],
+    utmfyClaims: Object.fromEntries(
+      [...Object.entries(left.utmfyClaims ?? {}), ...Object.entries(right.utmfyClaims ?? {})].map(
+        ([id, sent]) => [id, mergeUtmfySent(left.utmfyClaims?.[id], mergeUtmfySent(right.utmfyClaims?.[id], sent))],
+      ),
+    ),
     utmfyLast:
       left.utmfyLast && (!right.utmfyLast || left.utmfyLast.at > right.utmfyLast.at)
         ? left.utmfyLast
@@ -368,6 +436,17 @@ function mergePersisted(data: PersistedState) {
     }
     mergeUtmfy(data.settings.utmfy);
   }
+  if (data.utmfyClaims) {
+    for (const [id, sent] of Object.entries(data.utmfyClaims)) {
+      store.utmfyClaims.set(id, mergeUtmfySent(store.utmfyClaims.get(id), sent));
+    }
+  }
+  for (const order of store.orders) {
+    if (!order.id) continue;
+    const merged = mergeUtmfySent(store.utmfyClaims.get(order.id), order.utmfySent);
+    store.utmfyClaims.set(order.id, merged);
+    order.utmfySent = merged;
+  }
   if (data.utmfyLast && (!store.utmfyLast || data.utmfyLast.at > store.utmfyLast.at)) {
     store.utmfyLast = data.utmfyLast;
   }
@@ -414,6 +493,7 @@ async function writeRemoteState(data: PersistedState) {
         presence: data.presence,
         sessions: data.sessions,
         pinHash: data.pinHash,
+        utmfyClaims: data.utmfyClaims,
         writtenAt: data.writtenAt,
       }),
     });
@@ -527,6 +607,7 @@ async function hydrate() {
     store.settings.hasPin = true;
   }
   store.settings.hasPin = Boolean(store.pinHash);
+  await loadUtmfyToken();
   mergeUtmfy(store.settings.utmfy);
 }
 
@@ -601,40 +682,56 @@ function utcStamp(iso?: string) {
   return date.toISOString().slice(0, 19).replace("T", " ");
 }
 
+function utmfyCreatedAtFor(order: OrderSummary) {
+  const claimed = store.utmfyClaims.get(order.id)?.createdAt;
+  const stored = store.orders.find((item) => item.id === order.id);
+  return (
+    claimed ||
+    stored?.utmfySent?.createdAt ||
+    order.utmfySent?.createdAt ||
+    utcStamp(stored?.createdAt || order.createdAt)
+  );
+}
+
 async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid" | "refused" | "refunded") {
+  await loadUtmfyToken();
   const token = store.settings.utmfy.apiToken;
   if (!hasSecret(token)) {
     store.utmfyLast = {
       at: new Date().toISOString(),
       ok: false,
-      message: "UTMify sem token no servidor",
+      message: "UTMify sem token no servidor. Salve o token na aba UTMify.",
     };
     return false;
   }
   const attr = order.attribution ?? {};
-  const payload = {
+  const createdAt = utmfyCreatedAtFor(order);
+  const totalCents = Math.max(1, Math.round(order.total * 100));
+  const payload: Record<string, unknown> = {
     orderId: order.id,
     platform: "AsicsStore",
-    paymentMethod: "pix" as const,
+    paymentMethod: "pix",
     status,
-    createdAt: utcStamp(order.createdAt),
+    createdAt,
     approvedDate: status === "paid" ? utcStamp() : null,
     refundedAt: status === "refunded" ? utcStamp() : null,
     customer: {
-      name: customerName(order.data),
-      email: order.data.email,
+      name: customerName(order.data) || "Cliente",
+      email: order.data.email || "cliente@loja.local",
       phone: order.data.phone.replace(/\D/g, "") || null,
       document: order.data.cpf.replace(/\D/g, "") || null,
       country: "BR",
     },
-    products: order.items.map((item) => ({
-      id: String(item.id),
-      name: item.title,
-      planId: item.size ?? null,
-      planName: item.size ? `Tam. ${item.size}` : null,
-      quantity: item.qty,
-      priceInCents: Math.round(item.price * 100),
-    })),
+    products: (order.items.length ? order.items : [{ id: 0, title: "Pedido", qty: 1, price: order.total, photo: "" }]).map(
+      (item) => ({
+        id: String(item.id || order.id),
+        name: item.title || "Produto",
+        planId: item.size ?? null,
+        planName: item.size ? `Tam. ${item.size}` : null,
+        quantity: item.qty,
+        priceInCents: Math.max(0, Math.round(item.price * 100)),
+      }),
+    ),
     trackingParameters: {
       src: attr.src ?? null,
       sck: attr.sck ?? null,
@@ -643,18 +740,14 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
       utm_medium: attr.utm_medium ?? null,
       utm_content: attr.utm_content ?? null,
       utm_term: attr.utm_term ?? null,
-      fbclid: attr.fbclid ?? null,
-      gclid: attr.gclid ?? null,
-      ttclid: attr.ttclid ?? null,
     },
     commission: {
-      totalPriceInCents: Math.round(order.total * 100),
+      totalPriceInCents: totalCents,
       gatewayFeeInCents: 0,
-      userCommissionInCents: Math.round(order.total * 100),
-      currency: "BRL" as const,
+      userCommissionInCents: totalCents,
     },
-    isTest: Boolean(store.settings.utmfy.testMode),
   };
+  if (store.settings.utmfy.testMode) payload.isTest = true;
 
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -667,14 +760,16 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
         body: JSON.stringify(payload),
       });
       const body = await res.text();
+      const duplicate = /already|duplicate|exists|já exist|ja exist/i.test(body);
+      const ok = res.ok || (res.status >= 400 && res.status < 500 && duplicate);
       store.utmfyLast = {
         at: new Date().toISOString(),
-        ok: res.ok,
-        message: res.ok
+        ok,
+        message: ok
           ? `UTMify ${status} · ${order.id}`
           : body.slice(0, 240) || `HTTP ${res.status}`,
       };
-      if (res.ok) return true;
+      if (ok) return true;
     } catch (error) {
       store.utmfyLast = {
         at: new Date().toISOString(),
@@ -695,19 +790,77 @@ function utmfyStatusOf(order: OrderSummary): "waiting_payment" | "paid" | "refus
   return "waiting_payment";
 }
 
-async function notifyUtmfy(order: OrderSummary) {
-  const stored = store.orders.find((item) => item.id === order.id);
-  const sent = { ...(stored?.utmfySent ?? order.utmfySent ?? {}) };
-  const mapped = utmfyStatusOf(order);
+const utmfyLocks = new Map<string, Promise<void>>();
 
-  if (!sent.waiting_payment) {
-    sent.waiting_payment = await sendUtmfy(order, "waiting_payment");
+async function rememberUtmfySent(orderId: string, sent: UtmfySent) {
+  const next = mergeUtmfySent(store.utmfyClaims.get(orderId), sent);
+  store.utmfyClaims.set(orderId, next);
+  const stored = store.orders.find((item) => item.id === orderId);
+  if (stored) stored.utmfySent = next;
+  await putShard(`${UTMIFY_PREFIX}${orderId}`, next);
+  return next;
+}
+
+async function notifyUtmfy(order: OrderSummary) {
+  const orderId = order.id;
+  if (!orderId) return;
+  const previous = utmfyLocks.get(orderId) ?? Promise.resolve();
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  utmfyLocks.set(
+    orderId,
+    previous.then(
+      () => gate,
+      () => gate,
+    ),
+  );
+  await previous.catch(() => undefined);
+  try {
+    const tx = order.pix?.transactionId;
+    const stored = store.orders.find(
+      (item) =>
+        item.id === orderId ||
+        (tx !== undefined &&
+          tx !== "" &&
+          String(item.pix?.transactionId ?? "") === String(tx)),
+    );
+    let sent = mergeUtmfySent(
+      store.utmfyClaims.get(orderId),
+      mergeUtmfySent(stored?.utmfySent, order.utmfySent),
+    );
+    const mapped = utmfyStatusOf(stored ?? order);
+    const createdAt = sent.createdAt || utmfyCreatedAtFor(stored ?? order);
+    if (!sent.createdAt) {
+      sent = await rememberUtmfySent(orderId, { ...sent, createdAt });
+    }
+
+    if (!sent.waiting_payment) {
+      const ok = await sendUtmfy({ ...(stored ?? order), utmfySent: sent }, "waiting_payment");
+      if (ok) sent = await rememberUtmfySent(orderId, { ...sent, waiting_payment: true, createdAt });
+    }
+    if (mapped !== "waiting_payment" && !sent[mapped]) {
+      const ok = await sendUtmfy({ ...(stored ?? order), utmfySent: sent }, mapped);
+      if (ok) sent = await rememberUtmfySent(orderId, { ...sent, [mapped]: true, createdAt });
+    }
+    order.utmfySent = sent;
+  } finally {
+    release();
   }
-  if (mapped !== "waiting_payment" && sent.waiting_payment && !sent[mapped]) {
-    sent[mapped] = await sendUtmfy(order, mapped);
+}
+
+async function flushUtmfyOrders() {
+  await loadUtmfyToken();
+  if (!hasSecret(store.settings.utmfy.apiToken)) return;
+  for (const order of store.orders) {
+    if (!order.id || !/^PD/i.test(order.id)) continue;
+    try {
+      await notifyUtmfy(order);
+    } catch {
+      // segue o próximo pedido
+    }
   }
-  if (stored) stored.utmfySent = sent;
-  else order.utmfySent = sent;
 }
 
 async function hashUser(value: string) {
@@ -812,15 +965,26 @@ function mergeOrders(prev: OrderSummary | undefined, incoming: OrderSummary): Or
     sessionId: incoming.sessionId || prev.sessionId,
     notes: incoming.notes || prev.notes,
     purchaseTracked: incoming.purchaseTracked || prev.purchaseTracked,
-    utmfySent: { ...prev.utmfySent, ...incoming.utmfySent },
+    utmfySent: mergeUtmfySent(prev.utmfySent, incoming.utmfySent),
+    createdAt: earlierIso(prev.createdAt, incoming.createdAt) ?? incoming.createdAt,
     status: paid ? "paid" : incoming.status || prev.status,
   };
 }
 
 function upsertOrderLocal(order: OrderSummary) {
-  const index = store.orders.findIndex((item) => item.id === order.id);
-  if (index >= 0) store.orders[index] = mergeOrders(store.orders[index], order);
+  const tx = order.pix?.transactionId;
+  const index = store.orders.findIndex(
+    (item) =>
+      item.id === order.id ||
+      (tx !== undefined && tx !== "" && String(item.pix?.transactionId ?? "") === String(tx)),
+  );
+  if (index >= 0) store.orders[index] = mergeOrders(store.orders[index], { ...order, id: store.orders[index]?.id || order.id });
   else store.orders.unshift(order);
+  const saved = store.orders[index >= 0 ? index : 0];
+  if (saved?.id) {
+    saved.utmfySent = mergeUtmfySent(store.utmfyClaims.get(saved.id), saved.utmfySent);
+    store.utmfyClaims.set(saved.id, saved.utmfySent);
+  }
   store.orders = store.orders.slice(0, MAX_ORDERS);
 }
 
@@ -967,10 +1131,16 @@ async function syncMagicPayOrders() {
         changed = true;
       }
       upsertOrderLocal(merged);
-      ensureOrderTraffic(store.orders.find((item) => item.id === merged.id) ?? merged);
-      if (!prev) {
+      const saved = store.orders.find((item) => item.id === merged.id) ?? merged;
+      ensureOrderTraffic(saved);
+      const prevStatus = prev ? utmfyStatusOf(prev) : undefined;
+      const nextStatus = utmfyStatusOf(saved);
+      const ageMs = Date.now() - new Date(saved.createdAt).getTime();
+      const becamePaid = Boolean(prev) && prevStatus !== "paid" && nextStatus === "paid";
+      const freshPending = !prev && nextStatus === "waiting_payment" && ageMs < 10 * 60 * 1000;
+      if (becamePaid || freshPending) {
         try {
-          await notifyUtmfy(merged);
+          await notifyUtmfy(saved);
         } catch {
           // pedido já entrou no painel
         }
@@ -1256,11 +1426,13 @@ export const adminLogin = createServerFn({ method: "POST" })
   });
 
 export const getAdminSnapshot = createServerFn({ method: "POST" })
-  .validator(z.object({ token: z.string() }))
+  .validator(z.object({ token: z.string(), utmfyToken: z.string().optional() }))
   .handler(async ({ data }) => {
     await hydrate();
     await requireSession(data.token);
+    if (data.utmfyToken) await rememberUtmfyToken(data.utmfyToken);
     await syncMagicPayOrders();
+    await flushUtmfyOrders();
     return snapshot();
   });
 
@@ -1302,6 +1474,7 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
       hasPin: Boolean(store.pinHash),
       settingsAt: Date.now(),
     };
+    await rememberUtmfyToken(keepToken);
     await persist();
     return maskSettings();
   });

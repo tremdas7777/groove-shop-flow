@@ -40,15 +40,15 @@ const createPixInput = z.object({
 });
 
 function authHeader() {
-  const publicKey = process.env.MAGICPAY_PUBLIC_KEY ?? "";
-  const secretKey = process.env.MAGICPAY_SECRET_KEY ?? "";
+  const publicKey = (process.env.MAGICPAY_PUBLIC_KEY ?? "").trim();
+  const secretKey = (process.env.MAGICPAY_SECRET_KEY ?? "").trim();
   if (!publicKey || !secretKey) return null;
   const token = btoa(`${publicKey}:${secretKey}`);
   return `Basic ${token}`;
 }
 
 function apiUrl() {
-  return process.env.MAGICPAY_API_URL ?? "https://api.dashboardmagicpay.com";
+  return (process.env.MAGICPAY_API_URL ?? "").trim() || "https://api.dashboardmagicpay.com";
 }
 
 function normalizeStatus(status: unknown): PixStatus {

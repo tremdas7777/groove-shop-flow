@@ -1,6 +1,6 @@
 import { createFileRoute, Link, notFound, useNavigate } from "@tanstack/react-router";
 import { Heart, Ruler, Share2, Truck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ProductCard } from "@/components/ProductCard";
 import { StoreLayout } from "@/components/StoreLayout";
 import { useCart } from "@/lib/cart";
@@ -12,6 +12,7 @@ import {
   parsePrice,
   products,
 } from "@/lib/products";
+import { track } from "@/lib/tracking";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/produto/$id")({
@@ -62,19 +63,43 @@ function ProductPage() {
     .filter((p) => p.categoria === product.categoria && p.id !== product.id)
     .slice(0, 4);
 
-  const handleAdd = () => {
+  useEffect(() => {
+    track("view_item", {
+      content_ids: [String(product.id)],
+      content_name: product.titulo,
+      value: price,
+    });
+  }, [product.id, product.titulo, price]);
+
+  const addToBag = () => {
     if (sizes.length && !size) {
       setSizeError(true);
-      return;
+      return false;
     }
     add(product.id, 1, size || undefined);
+    track("add_to_cart", {
+      content_ids: [String(product.id)],
+      content_name: product.titulo,
+      value: price,
+      size,
+    });
+    return true;
+  };
+
+  const handleAdd = () => {
+    if (!addToBag()) return;
     setAdded(true);
     window.setTimeout(() => setAdded(false), 1600);
   };
 
+  const handleBuyNow = () => {
+    if (!addToBag()) return;
+    void navigate({ to: "/checkout" });
+  };
+
   return (
     <StoreLayout>
-      <main className="mx-auto max-w-[1280px] px-4 py-4 pb-28 lg:py-10 lg:pb-10">
+      <main className="mx-auto max-w-[1280px] px-4 py-4 lg:py-10">
         <p className="truncate text-[12px] text-muted-foreground">
           <Link to="/" className="hover:text-primary">
             ASICS Brasil
@@ -193,25 +218,18 @@ function ProductPage() {
               </div>
             )}
 
-            <div className="mt-8 hidden flex-col gap-3 lg:flex">
+            <div className="mt-8 flex flex-col gap-3">
               <button
                 type="button"
                 onClick={handleAdd}
-                className="h-12 rounded-full bg-primary text-[14px] font-semibold text-white"
+                className="h-12 w-full rounded-full bg-primary text-[14px] font-semibold text-white"
               >
                 {added ? "Adicionado à sacola" : "Adicionar à sacola"}
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (sizes.length && !size) {
-                    setSizeError(true);
-                    return;
-                  }
-                  add(product.id, 1, size || undefined);
-                  void navigate({ to: "/checkout" });
-                }}
-                className="flex h-12 items-center justify-center rounded-full border border-primary text-[14px] font-semibold text-primary"
+                onClick={handleBuyNow}
+                className="flex h-12 w-full items-center justify-center rounded-full border border-primary text-[14px] font-semibold text-primary"
               >
                 Comprar agora
               </button>
@@ -276,23 +294,6 @@ function ProductPage() {
         )}
       </main>
 
-      <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-30 border-t border-border bg-white/95 px-3 py-2.5 backdrop-blur-sm lg:hidden">
-        <div className="mx-auto flex max-w-[1280px] items-center gap-2">
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[12px] font-medium text-[#222]">
-              {product.titulo}
-            </p>
-            <p className="text-[14px] font-semibold">{formatBRL(price)}</p>
-          </div>
-          <button
-            type="button"
-            onClick={handleAdd}
-            className="h-12 shrink-0 rounded-full bg-primary px-5 text-[13px] font-semibold text-white"
-          >
-            {added ? "Adicionado" : "Adicionar"}
-          </button>
-        </div>
-      </div>
     </StoreLayout>
   );
 }

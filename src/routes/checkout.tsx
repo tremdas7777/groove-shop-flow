@@ -11,8 +11,8 @@ import {
   maskCep,
   maskCpf,
   maskPhone,
+  persistOrder,
   saveCheckoutDraft,
-  saveOrder,
   shippingMethods,
   type CheckoutData,
   type PaymentMethod,
@@ -23,6 +23,7 @@ import {
   getProduct,
   parsePrice,
 } from "@/lib/products";
+import { track } from "@/lib/tracking";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/checkout")({
@@ -62,6 +63,7 @@ function CheckoutPage() {
     const draft = loadCheckoutDraft();
     setData({ ...draft, payment: "pix" });
     setReady(true);
+    track("begin_checkout", { value: 0 });
   }, []);
 
   useEffect(() => {
@@ -165,6 +167,7 @@ function CheckoutPage() {
       shipping,
       discount: productDiscount,
       total,
+      status: "pending" as const,
     };
 
     if (data.payment === "pix") {
@@ -217,9 +220,14 @@ function CheckoutPage() {
         setPayError(result.error);
         return;
       }
-      saveOrder({ ...order, pix: result.pix });
+      persistOrder({ ...order, pix: result.pix });
+      track("generate_pix", {
+        order_id: orderId,
+        value: total,
+        content_ids: orderItems.map((item) => String(item.id)),
+      });
     } else {
-      saveOrder(order);
+      persistOrder(order);
     }
 
     void navigate({ to: "/pedido" });
@@ -406,7 +414,10 @@ function CheckoutPage() {
               <button
                 type="button"
                 onClick={() => {
-                  if (validateId()) setStep("entrega");
+                  if (validateId()) {
+                    track("checkout_identify", { email: data.email });
+                    setStep("entrega");
+                  }
                 }}
                 className="mt-8 h-12 w-full rounded-full bg-primary text-[14px] font-semibold text-white sm:w-auto sm:px-10"
               >
@@ -524,7 +535,14 @@ function CheckoutPage() {
               <button
                 type="button"
                 onClick={() => {
-                  if (validateShip()) setStep("pagamento");
+                  if (validateShip()) {
+                    track("checkout_shipping", {
+                      shipping: data.shippingMethod,
+                      city: data.city,
+                    });
+                    track("checkout_payment");
+                    setStep("pagamento");
+                  }
                 }}
                 className="mt-8 h-12 w-full rounded-full bg-primary text-[14px] font-semibold text-white sm:w-auto sm:px-10"
               >

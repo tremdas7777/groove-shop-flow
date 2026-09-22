@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Bell, Menu, Search, ShoppingBag, User, X } from "lucide-react";
+import { Bell, Menu, Search, ShoppingBag, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AsicsWordmark } from "@/components/Logo";
 import { useCart } from "@/lib/cart";
@@ -256,13 +256,6 @@ export function MobileBottomNav({
         }}
       >
         <Menu className="h-5 w-5" />
-      </button>
-      <button
-        type="button"
-        aria-label="Ir para Minha Conta"
-        className="flex h-11 w-11 items-center justify-center text-primary"
-      >
-        <User className="h-5 w-5" />
       </button>
       <Link
         to="/carrinho"

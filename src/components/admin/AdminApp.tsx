@@ -1,0 +1,1208 @@
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Activity,
+  BarChart3,
+  Filter,
+  LayoutDashboard,
+  LogOut,
+  Megaphone,
+  Package,
+  Radio,
+  Settings,
+  ShoppingBag,
+  Smartphone,
+  Target,
+} from "lucide-react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { toast } from "sonner";
+import {
+  adminLogin,
+  adminSetup,
+  adminStatus,
+  changeAdminPin,
+  getAdminSnapshot,
+  saveAdminSettings,
+  seedAdminDemo,
+  testUtmifyConnection,
+  updateAdminOrder,
+} from "@/lib/admin-api";
+import {
+  buildCampaigns,
+  buildFunnel,
+  defaultSettings,
+  money,
+  orderStatus,
+  pageLabel,
+  relativeTime,
+  sourceLabel,
+  statusLabel,
+  type AdminSettings,
+  type AdminSnapshot,
+} from "@/lib/admin";
+import { loadLocalEvents } from "@/lib/tracking";
+import { loadOrders, type OrderSummary } from "@/lib/checkout";
+import { formatBRL, products } from "@/lib/products";
+import { cn } from "@/lib/utils";
+import {
+  TOKEN_KEY,
+  loadLocalSettings,
+  localChangePin,
+  localCheckPin,
+  localHasPin,
+  saveLocalSettings,
+  seedLocalDemo,
+} from "@/lib/admin-local";
+
+type Tab =
+  | "visao"
+  | "live"
+  | "pedidos"
+  | "funil"
+  | "trafego"
+  | "produtos"
+  | "pixels"
+  | "utmify"
+  | "config";
+
+const tabs: { id: Tab; label: string; icon: typeof Eye }[] = [
+  { id: "visao", label: "Visão geral", icon: LayoutDashboard },
+  { id: "live", label: "Live view", icon: Radio },
+  { id: "pedidos", label: "Pedidos", icon: ShoppingBag },
+  { id: "funil", label: "Funil", icon: Filter },
+  { id: "trafego", label: "Tráfego / UTMs", icon: Megaphone },
+  { id: "produtos", label: "Produtos", icon: Package },
+  { id: "pixels", label: "Pixels", icon: Target },
+  { id: "utmify", label: "UTMify", icon: Activity },
+  { id: "config", label: "Configurações", icon: Settings },
+];
+
+export function AdminApp() {
+  const [token, setToken] = useState<string | null>(null);
+  const [hasPin, setHasPin] = useState<boolean | null>(null);
+  const [pin, setPin] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<Tab>("visao");
+  const [snap, setSnap] = useState<AdminSnapshot | null>(null);
+  const [settings, setSettings] = useState<AdminSettings>(defaultSettings);
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem(TOKEN_KEY);
+    setHasPin(localHasPin());
+    if (saved) setToken(saved);
+    void adminStatus()
+      .then((status) => {
+        if (status.hasPin) setHasPin(true);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    const pull = async () => {
+      const local = mergeLocal({
+        settings: loadLocalSettings(),
+        events: [],
+        orders: [],
+        visitors: [],
+      });
+      if (!cancelled) {
+        setSnap(local);
+        setSettings((prev) => ({ ...prev, ...local.settings }));
+      }
+      try {
+        const next = await getAdminSnapshot({ data: { token } });
+        if (cancelled) return;
+        setSnap(mergeLocal(next));
+        setSettings((prev) => ({
+          ...prev,
+          ...next.settings,
+          pixels: next.settings.pixels,
+          utmfy: { ...next.settings.utmify, apiToken: next.settings.utmify.apiToken || prev.utmify.apiToken },
+        }));
+      } catch {
+        // mantém o snapshot local
+      }
+    };
+    void pull();
+    const id = window.setInterval(() => void pull(), 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [token]);
+
+  const submitAuth = async () => {
+    setBusy(true);
+    setAuthError("");
+    try {
+      const ok = await localCheckPin(pin);
+      if (!ok) throw new Error("Senha incorreta.");
+      const tokenValue = `local_${Date.now().toString(36)}`;
+      sessionStorage.setItem(TOKEN_KEY, tokenValue);
+      setHasPin(true);
+      setToken(tokenValue);
+      setPin("");
+      setSettings(loadLocalSettings());
+      void (hasPin ? adminLogin({ data: { pin } }) : adminSetup({ data: { pin } })).catch(() => undefined);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Não foi possível entrar.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!token) {
+    return (
+      <div className="dark flex min-h-dvh items-center justify-center bg-[#070b14] px-4 text-white">
+        <form
+          className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#10182a] p-6 shadow-2xl"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitAuth();
+          }}
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#E0B761]">
+            Backoffice
+          </p>
+          <h1 className="mt-2 text-2xl font-semibold">Admin da loja</h1>
+          <p className="mt-2 text-sm text-white/60">
+            {hasPin
+              ? "Digite a senha para ver pedidos, live view e pixels."
+              : "Crie uma senha agora. Ela protege o painel neste servidor."}
+          </p>
+          <input
+            type="password"
+            value={pin}
+            minLength={4}
+            placeholder="Senha (mín. 4)"
+            onChange={(e) => setPin(e.target.value)}
+            className="mt-6 h-12 w-full rounded-xl border border-white/10 bg-black/30 px-4 text-[16px] outline-none focus:border-[#E0B761]"
+          />
+          {authError && <p className="mt-2 text-sm text-red-400">{authError}</p>}
+          <button
+            type="submit"
+            disabled={busy || pin.length < 4}
+            className="mt-5 h-12 w-full rounded-xl bg-[#E0B761] text-sm font-semibold text-[#001E62] disabled:opacity-50"
+          >
+            {busy ? "Entrando..." : hasPin ? "Entrar" : "Criar senha e entrar"}
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  const events = snap?.events ?? [];
+  const orders = snap?.orders ?? [];
+  const visitors = snap?.visitors ?? [];
+  const paid = orders.filter((order) => orderStatus(order) === "paid");
+  const pending = orders.filter((order) => orderStatus(order) === "pending");
+  const revenue = paid.reduce((acc, order) => acc + order.total, 0);
+  const pixRevenue = pending.reduce((acc, order) => acc + order.total, 0);
+  const sessions = new Set(events.map((event) => event.sessionId)).size;
+  const conv = sessions ? (paid.length / sessions) * 100 : 0;
+
+  return (
+    <div className="dark min-h-dvh bg-[#070b14] text-white">
+      <div className="flex min-h-dvh">
+        <aside className="hidden w-60 shrink-0 border-r border-white/10 bg-[#0c1322] lg:flex lg:flex-col">
+          <div className="border-b border-white/10 px-5 py-5">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#E0B761]">
+              Admin
+            </p>
+            <h1 className="mt-1 text-lg font-semibold">{settings.storeName || "Loja"}</h1>
+          </div>
+          <nav className="flex-1 space-y-1 p-3">
+            {tabs.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                className={cn(
+                  "flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-[13px]",
+                  tab === item.id ? "bg-white/10 text-white" : "text-white/60 hover:bg-white/5 hover:text-white",
+                )}
+              >
+                <item.icon className="h-4 w-4" />
+                {item.label}
+                {item.id === "live" && visitors.length > 0 && (
+                  <span className="ml-auto rounded-full bg-emerald-500/20 px-1.5 text-[10px] text-emerald-300">
+                    {visitors.length}
+                  </span>
+                )}
+                {item.id === "pedidos" && pending.length > 0 && (
+                  <span className="ml-auto rounded-full bg-amber-500/20 px-1.5 text-[10px] text-amber-300">
+                    {pending.length}
+                  </span>
+                )}
+              </button>
+            ))}
+          </nav>
+          <button
+            type="button"
+            onClick={() => {
+              sessionStorage.removeItem(TOKEN_KEY);
+              setToken(null);
+            }}
+            className="m-3 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-white/50 hover:bg-white/5 hover:text-white"
+          >
+            <LogOut className="h-4 w-4" /> Sair
+          </button>
+        </aside>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3 lg:px-6">
+            <div className="flex items-center gap-2 text-sm text-white/60">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400 opacity-60" />
+                <span className="relative h-2.5 w-2.5 rounded-full bg-emerald-400" />
+              </span>
+              {visitors.length} online
+            </div>
+            <div className="hidden text-xs text-white/40 sm:block">
+              {sessions} sessões · {money(revenue)} pagos · {pending.length} PIX abertos
+            </div>
+            <select
+              value={tab}
+              onChange={(e) => setTab(e.target.value as Tab)}
+              className="rounded-lg border border-white/10 bg-[#10182a] px-3 py-2 text-sm lg:hidden"
+            >
+              {tabs.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </header>
+
+          <main className="flex-1 overflow-x-clip p-4 lg:p-6">
+            {tab === "visao" && (
+              <Overview
+                sessions={sessions}
+                revenue={revenue}
+                pixRevenue={pixRevenue}
+                paid={paid.length}
+                pending={pending.length}
+                conv={conv}
+                events={events}
+                orders={orders}
+              />
+            )}
+            {tab === "live" && <LiveView visitors={visitors} events={events} />}
+            {tab === "pedidos" && (
+              <OrdersPanel
+                orders={orders}
+                token={token}
+                onChange={(next) => setSnap((prev) => (prev ? { ...prev, orders: prev.orders.map((o) => (o.id === next.id ? next : o)) } : prev))}
+              />
+            )}
+            {tab === "funil" && <FunnelPanel events={events} orders={orders} />}
+            {tab === "trafego" && <TrafficPanel events={events} orders={orders} />}
+            {tab === "produtos" && <ProductsPanel events={events} orders={orders} />}
+            {tab === "pixels" && (
+              <PixelsPanel
+                settings={settings}
+                onChange={setSettings}
+                onSave={() => void saveSettings(token, settings, setSettings)}
+              />
+            )}
+            {tab === "utmify" && (
+              <UtmifyPanel
+                settings={settings}
+                last={snap?.utmifyLast}
+                onChange={setSettings}
+                onSave={() => void saveSettings(token, settings, setSettings)}
+                onTest={async () => {
+                  try {
+                    const result = await testUtmifyConnection({ data: { token } });
+                    toast[result?.ok ? "success" : "error"](result?.message ?? "Sem retorno");
+                  } catch (error) {
+                    toast.error(error instanceof Error ? error.message : "Falha no teste");
+                  }
+                }}
+              />
+            )}
+            {tab === "config" && (
+              <ConfigPanel
+                settings={settings}
+                token={token}
+                onChange={setSettings}
+                onSave={() => void saveSettings(token, settings, setSettings)}
+                onSeed={() => {
+                  seedLocalDemo();
+                  setSnap(
+                    mergeLocal({
+                      settings: loadLocalSettings(),
+                      events: [],
+                      orders: [],
+                      visitors: [],
+                    }),
+                  );
+                  void seedAdminDemo({ data: { token } }).catch(() => undefined);
+                  toast.success("Dados de exemplo carregados");
+                }}
+              />
+            )}
+          </main>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function mergeLocal(snap: AdminSnapshot): AdminSnapshot {
+  const localEvents = loadLocalEvents();
+  const localOrders = loadOrders();
+  const events = [...snap.events];
+  for (const event of localEvents) {
+    if (!events.some((item) => item.id === event.id)) events.push(event);
+  }
+  const orders = [...snap.orders];
+  for (const order of localOrders) {
+    if (!orders.some((item) => item.id === order.id)) orders.push(order);
+  }
+  events.sort((a, b) => a.ts.localeCompare(b.ts));
+  orders.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return { ...snap, events, orders };
+}
+
+async function saveSettings(
+  token: string,
+  settings: AdminSettings,
+  setSettings: (settings: AdminSettings) => void,
+) {
+  saveLocalSettings(settings);
+  setSettings(settings);
+  try {
+    const next = await saveAdminSettings({
+      data: {
+        token,
+        settings: {
+          storeName: settings.storeName,
+          webhookUrl: settings.webhookUrl,
+          pixels: settings.pixels,
+          utmfy: settings.utmify,
+        },
+      },
+    });
+    setSettings(next);
+    toast.success("Configurações salvas. Os pixels valem para todos os visitantes.");
+  } catch {
+    toast.success("Salvo neste navegador. Publique e configure o servidor para valer em todos os visitantes.");
+  }
+}
+
+function Card({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+      <p className="text-[11px] uppercase tracking-wide text-white/45">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight">{value}</p>
+      {hint && <p className="mt-1 text-xs text-white/40">{hint}</p>}
+    </div>
+  );
+}
+
+function Overview({
+  sessions,
+  revenue,
+  pixRevenue,
+  paid,
+  pending,
+  conv,
+  events,
+  orders,
+}: {
+  sessions: number;
+  revenue: number;
+  pixRevenue: number;
+  paid: number;
+  pending: number;
+  conv: number;
+  events: AdminSnapshot["events"];
+  orders: OrderSummary[];
+}) {
+  const hourly = useMemo(() => {
+    const buckets = new Map<string, { hour: string; sessoes: number; pix: number; pagos: number }>();
+    const mark = (iso: string, field: "sessoes" | "pix" | "pagos") => {
+      const date = new Date(iso);
+      const key = `${date.getHours().toString().padStart(2, "0")}h`;
+      const row = buckets.get(key) ?? { hour: key, sessoes: 0, pix: 0, pagos: 0 };
+      row[field] += 1;
+      buckets.set(key, row);
+    };
+    const seen = new Set<string>();
+    for (const event of events) {
+      const hour = new Date(event.ts).getHours();
+      const sid = `${hour}-${event.sessionId}`;
+      if (!seen.has(sid)) {
+        seen.add(sid);
+        mark(event.ts, "sessoes");
+      }
+      if (event.name === "generate_pix") mark(event.ts, "pix");
+      if (event.name === "purchase") mark(event.ts, "pagos");
+    }
+    return [...buckets.values()].sort((a, b) => a.hour.localeCompare(b.hour));
+  }, [events]);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold">Visão geral</h2>
+        <p className="text-sm text-white/50">Funil, PIX e receita em tempo quase real.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <Card label="Visitantes" value={String(sessions)} hint="Sessões únicas" />
+        <Card label="PIX gerados" value={String(pending + paid)} hint={`${pending} aguardando`} />
+        <Card label="Pagos" value={String(paid)} hint={`${conv.toFixed(1)}% das sessões`} />
+        <Card label="Receita paga" value={money(revenue)} />
+        <Card label="PIX em aberto" value={money(pixRevenue)} hint="Ainda não pagos" />
+      </div>
+      <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+        <h3 className="mb-4 text-sm font-medium text-white/70">Sessões, PIX e pagos por hora</h3>
+        <div className="h-64">
+          {hourly.length === 0 ? (
+            <Empty text="Ainda sem tráfego. Abra a loja ou gere dados de exemplo em Configurações." />
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={hourly}>
+                <CartesianGrid stroke="rgba(255,255,255,0.06)" />
+                <XAxis dataKey="hour" stroke="#94a3b8" fontSize={12} />
+                <YAxis stroke="#94a3b8" fontSize={12} allowDecimals={false} />
+                <Tooltip
+                  contentStyle={{ background: "#10182a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12 }}
+                />
+                <Area type="monotone" dataKey="sessoes" stroke="#7dd3fc" fill="#7dd3fc33" />
+                <Area type="monotone" dataKey="pix" stroke="#E0B761" fill="#E0B76133" />
+                <Area type="monotone" dataKey="pagos" stroke="#34d399" fill="#34d39933" />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+      <RecentOrders orders={orders.slice(0, 6)} />
+    </div>
+  );
+}
+
+function LiveView({
+  visitors,
+  events,
+}: {
+  visitors: AdminSnapshot["visitors"];
+  events: AdminSnapshot["events"];
+}) {
+  const feed = [...events].reverse().slice(0, 40);
+  return (
+    <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+      <section>
+        <h2 className="text-xl font-semibold">Quem está na loja agora</h2>
+        <p className="text-sm text-white/50">Presença atualizada a cada poucos segundos.</p>
+        <div className="mt-4 space-y-2">
+          {visitors.length === 0 && <Empty text="Ninguém online neste instante. Abra a loja em outra aba." />}
+          {visitors.map((visitor) => (
+            <div
+              key={visitor.sessionId}
+              className="flex items-start justify-between gap-3 rounded-2xl border border-white/10 bg-[#10182a] p-4"
+            >
+              <div>
+                <p className="font-medium">{pageLabel(visitor.path)}</p>
+                <p className="mt-1 text-xs text-white/45">
+                  {sourceLabel(visitor.attribution)}
+                  {visitor.attribution.utm_campaign ? ` · ${visitor.attribution.utm_campaign}` : ""}
+                </p>
+                <p className="mt-1 text-[11px] text-white/35">{visitor.path}</p>
+              </div>
+              <div className="text-right text-xs text-white/50">
+                <p className="inline-flex items-center gap-1">
+                  <Smartphone className="h-3.5 w-3.5" /> {visitor.device}
+                </p>
+                <p className="mt-1">{relativeTime(visitor.lastTs)}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section>
+        <h2 className="text-xl font-semibold">Feed de eventos</h2>
+        <div className="mt-4 space-y-2">
+          {feed.length === 0 && <Empty text="Os cliques e páginas da loja aparecem aqui." />}
+          {feed.map((event) => (
+            <div key={event.id} className="rounded-xl border border-white/8 bg-white/4 px-3 py-2 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-[#E0B761]">{event.name}</span>
+                <span className="text-[11px] text-white/40">{relativeTime(event.ts)}</span>
+              </div>
+              <p className="text-xs text-white/50">
+                {pageLabel(event.path)} · {event.device} · {sourceLabel(event.attribution)}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function OrdersPanel({
+  orders,
+  token,
+  onChange,
+}: {
+  orders: OrderSummary[];
+  token: string;
+  onChange: (order: OrderSummary) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("todos");
+  const [open, setOpen] = useState<OrderSummary | null>(null);
+  const filtered = orders.filter((order) => {
+    const hay = `${order.id} ${order.data.email} ${order.data.firstName} ${order.data.lastName}`.toLowerCase();
+    const matchQ = hay.includes(query.toLowerCase());
+    const matchS = status === "todos" || orderStatus(order) === status;
+    return matchQ && matchS;
+  });
+
+  return (
+    <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-xl font-semibold">Pedidos</h2>
+          <p className="text-sm text-white/50">{orders.length} no total</p>
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar e-mail, nome, ID"
+            className="h-10 rounded-xl border border-white/10 bg-[#10182a] px-3 text-sm"
+          />
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="h-10 rounded-xl border border-white/10 bg-[#10182a] px-3 text-sm"
+          >
+            <option value="todos">Todos</option>
+            <option value="pending">Aguardando</option>
+            <option value="paid">Pagos</option>
+            <option value="refused">Recusados</option>
+            <option value="refunded">Reembolsos</option>
+          </select>
+        </div>
+      </div>
+      <div className="mt-4 overflow-x-auto rounded-2xl border border-white/10">
+        <table className="w-full min-w-[720px] text-left text-sm">
+          <thead className="bg-white/5 text-[11px] uppercase tracking-wide text-white/45">
+            <tr>
+              <th className="px-4 py-3">Pedido</th>
+              <th className="px-4 py-3">Cliente</th>
+              <th className="px-4 py-3">Origem</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3 text-right">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-4 py-10 text-center text-white/40">
+                  Nenhum pedido ainda.
+                </td>
+              </tr>
+            )}
+            {filtered.map((order) => (
+              <tr
+                key={order.id}
+                onClick={() => setOpen(order)}
+                className="cursor-pointer border-t border-white/8 hover:bg-white/5"
+              >
+                <td className="px-4 py-3">
+                  <p className="font-medium">{order.id}</p>
+                  <p className="text-[11px] text-white/40">{new Date(order.createdAt).toLocaleString("pt-BR")}</p>
+                </td>
+                <td className="px-4 py-3">
+                  {order.data.firstName} {order.data.lastName}
+                  <p className="text-[11px] text-white/40">{order.data.email}</p>
+                </td>
+                <td className="px-4 py-3 text-xs text-white/60">{sourceLabel(order.attribution)}</td>
+                <td className="px-4 py-3">
+                  <StatusPill status={orderStatus(order)} />
+                </td>
+                <td className="px-4 py-3 text-right font-semibold">{money(order.total)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {open && (
+        <OrderDrawer
+          order={open}
+          token={token}
+          onClose={() => setOpen(null)}
+          onChange={(next) => {
+            onChange(next);
+            setOpen(next);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function OrderDrawer({
+  order,
+  token,
+  onClose,
+  onChange,
+}: {
+  order: OrderSummary;
+  token: string;
+  onClose: () => void;
+  onChange: (order: OrderSummary) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
+      <aside
+        className="h-full w-full max-w-md overflow-y-auto border-l border-white/10 bg-[#0c1322] p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="text-xs text-white/40">Pedido</p>
+        <h3 className="text-xl font-semibold">{order.id}</h3>
+        <StatusPill status={orderStatus(order)} />
+        <dl className="mt-5 space-y-2 text-sm">
+          <Row label="Cliente" value={`${order.data.firstName} ${order.data.lastName}`} />
+          <Row label="E-mail" value={order.data.email} />
+          <Row label="Telefone" value={order.data.phone} />
+          <Row label="CPF" value={order.data.cpf} />
+          <Row
+            label="Endereço"
+            value={`${order.data.street}, ${order.data.number} · ${order.data.city}/${order.data.state}`}
+          />
+          <Row label="Frete" value={order.data.shippingMethod} />
+          <Row label="Origem" value={sourceLabel(order.attribution)} />
+          <Row label="Campanha" value={order.attribution?.utm_campaign || "—"} />
+          <Row label="PIX" value={order.pix?.transactionId ? String(order.pix.transactionId) : "—"} />
+        </dl>
+        <ul className="mt-5 space-y-2 text-sm">
+          {order.items.map((item) => (
+            <li key={`${item.id}-${item.size}`} className="flex justify-between gap-3">
+              <span>
+                {item.qty}x {item.title}
+                {item.size ? ` · ${item.size}` : ""}
+              </span>
+              <span>{formatBRL(item.price * item.qty)}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-4 text-right text-lg font-semibold">{money(order.total)}</p>
+        <div className="mt-6 grid grid-cols-2 gap-2">
+          {(["pending", "paid", "refused", "refunded"] as const).map((status) => (
+            <button
+              key={status}
+              type="button"
+              onClick={async () => {
+                try {
+                  const next = await updateAdminOrder({ data: { token, orderId: order.id, status } });
+                  onChange(next);
+                  toast.success(`Status: ${statusLabel(status)}`);
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : "Não atualizou");
+                }
+              }}
+              className="rounded-xl border border-white/10 px-3 py-2 text-xs hover:bg-white/5"
+            >
+              {statusLabel(status)}
+            </button>
+          ))}
+        </div>
+        <button type="button" onClick={onClose} className="mt-6 text-sm text-white/50">
+          Fechar
+        </button>
+      </aside>
+    </div>
+  );
+}
+
+function FunnelPanel({ events, orders }: { events: AdminSnapshot["events"]; orders: OrderSummary[] }) {
+  const steps = buildFunnel(events, orders);
+  return (
+    <div>
+      <h2 className="text-xl font-semibold">Funil detalhado</h2>
+      <p className="text-sm text-white/50">Onde o tráfego entra e onde abandona até o PIX pago.</p>
+      <div className="mt-6 space-y-3">
+        {steps.map((step) => (
+          <div key={step.id} className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium">{step.label}</span>
+              <span className="text-white/60">
+                {step.count} · {step.rateFromStart.toFixed(1)}% do topo
+                {step.id !== "sessions" && ` · ${step.rateFromPrev.toFixed(1)}% do passo anterior`}
+              </span>
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-[#001E62] to-[#E0B761]"
+                style={{ width: `${Math.max(2, Math.min(100, step.rateFromStart || (step.count ? 100 : 0)))}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TrafficPanel({ events, orders }: { events: AdminSnapshot["events"]; orders: OrderSummary[] }) {
+  const rows = buildCampaigns(events, orders);
+  return (
+    <div>
+      <h2 className="text-xl font-semibold">Tráfego e UTMs</h2>
+      <p className="text-sm text-white/50">Performance por origem, campanha e medium.</p>
+      <div className="mt-4 overflow-x-auto rounded-2xl border border-white/10">
+        <table className="w-full min-w-[800px] text-left text-sm">
+          <thead className="bg-white/5 text-[11px] uppercase tracking-wide text-white/45">
+            <tr>
+              <th className="px-4 py-3">Origem</th>
+              <th className="px-4 py-3">Campanha</th>
+              <th className="px-4 py-3">Medium</th>
+              <th className="px-4 py-3">Sessões</th>
+              <th className="px-4 py-3">Sacola</th>
+              <th className="px-4 py-3">Checkout</th>
+              <th className="px-4 py-3">PIX</th>
+              <th className="px-4 py-3">Pagos</th>
+              <th className="px-4 py-3 text-right">Receita</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={9} className="px-4 py-10 text-center text-white/40">
+                  Sem UTMs ainda. Use ?utm_source=facebook&utm_campaign=teste na home.
+                </td>
+              </tr>
+            )}
+            {rows.map((row) => (
+              <tr key={row.key} className="border-t border-white/8">
+                <td className="px-4 py-3">{row.source}</td>
+                <td className="px-4 py-3">{row.campaign}</td>
+                <td className="px-4 py-3">{row.medium}</td>
+                <td className="px-4 py-3">{row.sessions}</td>
+                <td className="px-4 py-3">{row.carts}</td>
+                <td className="px-4 py-3">{row.checkout}</td>
+                <td className="px-4 py-3">{row.pix}</td>
+                <td className="px-4 py-3">{row.paid}</td>
+                <td className="px-4 py-3 text-right">{money(row.revenue)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ProductsPanel({ events, orders }: { events: AdminSnapshot["events"]; orders: OrderSummary[] }) {
+  const rows = products.map((product) => {
+    const views = events.filter((event) => event.name === "view_item" && String(event.props?.content_ids) === String([product.id])).length
+      + events.filter((event) => event.path.includes(`/produto/${product.id}`)).length;
+    const carts = events.filter(
+      (event) => event.name === "add_to_cart" && String(event.props?.content_ids ?? "").includes(String(product.id)),
+    ).length;
+    const sold = orders
+      .filter((order) => orderStatus(order) === "paid")
+      .flatMap((order) => order.items)
+      .filter((item) => item.id === product.id);
+    const units = sold.reduce((acc, item) => acc + item.qty, 0);
+    const revenue = sold.reduce((acc, item) => acc + item.price * item.qty, 0);
+    return { product, views, carts, units, revenue };
+  }).sort((a, b) => b.views - a.views || b.revenue - a.revenue);
+
+  return (
+    <div>
+      <h2 className="text-xl font-semibold">Produtos</h2>
+      <p className="text-sm text-white/50">Visualizações, sacola e vendas pagas.</p>
+      <div className="mt-4 overflow-x-auto rounded-2xl border border-white/10">
+        <table className="w-full min-w-[720px] text-left text-sm">
+          <thead className="bg-white/5 text-[11px] uppercase tracking-wide text-white/45">
+            <tr>
+              <th className="px-4 py-3">Produto</th>
+              <th className="px-4 py-3">Views</th>
+              <th className="px-4 py-3">Sacola</th>
+              <th className="px-4 py-3">Vendidos</th>
+              <th className="px-4 py-3 text-right">Receita</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 40).map((row) => (
+              <tr key={row.product.id} className="border-t border-white/8">
+                <td className="px-4 py-3">{row.product.titulo}</td>
+                <td className="px-4 py-3">{row.views}</td>
+                <td className="px-4 py-3">{row.carts}</td>
+                <td className="px-4 py-3">{row.units}</td>
+                <td className="px-4 py-3 text-right">{money(row.revenue)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function PixelsPanel({
+  settings,
+  onChange,
+  onSave,
+}: {
+  settings: AdminSettings;
+  onChange: (settings: AdminSettings) => void;
+  onSave: () => void;
+}) {
+  const p = settings.pixels;
+  const set = (partial: Partial<AdminSettings["pixels"]>) =>
+    onChange({ ...settings, pixels: { ...p, ...partial } });
+  return (
+    <div className="max-w-3xl space-y-5">
+      <div>
+        <h2 className="text-xl font-semibold">Pixels de tráfego</h2>
+        <p className="text-sm text-white/50">
+          Os IDs entram no site inteiro: PageView, ViewContent, AddToCart, InitiateCheckout e Purchase.
+        </p>
+      </div>
+      <PixelField
+        title="Meta Ads"
+        enabled={p.metaEnabled}
+        onEnabled={(metaEnabled) => set({ metaEnabled })}
+        label="Pixel ID"
+        value={p.metaPixelId}
+        onValue={(metaPixelId) => set({ metaPixelId })}
+        placeholder="000000000000000"
+      />
+      <PixelField
+        title="Google Analytics 4"
+        enabled={p.googleEnabled}
+        onEnabled={(googleEnabled) => set({ googleEnabled })}
+        label="Measurement ID"
+        value={p.gaId}
+        onValue={(gaId) => set({ gaId })}
+        placeholder="G-XXXXXXXX"
+        extra={
+          <Field
+            label="Google Ads (AW-)"
+            value={p.googleAdsId}
+            onChange={(googleAdsId) => set({ googleAdsId })}
+            placeholder="AW-000000000"
+          />
+        }
+      />
+      <PixelField
+        title="TikTok Ads"
+        enabled={p.tiktokEnabled}
+        onEnabled={(tiktokEnabled) => set({ tiktokEnabled })}
+        label="Pixel ID"
+        value={p.tiktokPixelId}
+        onValue={(tiktokPixelId) => set({ tiktokPixelId })}
+        placeholder="CXXXXXXXX"
+      />
+      <PixelField
+        title="Kwai Ads"
+        enabled={p.kwaiEnabled}
+        onEnabled={(kwaiEnabled) => set({ kwaiEnabled })}
+        label="Pixel ID"
+        value={p.kwaiPixelId}
+        onValue={(kwaiPixelId) => set({ kwaiPixelId })}
+      />
+      <label className="block">
+        <span className="text-xs text-white/50">HTML extra no head (GTM, Snap, Pinterest…)</span>
+        <textarea
+          value={p.customHeadHtml}
+          onChange={(e) => set({ customHeadHtml: e.target.value })}
+          rows={6}
+          className="mt-1 w-full rounded-xl border border-white/10 bg-[#10182a] p-3 font-mono text-xs"
+          placeholder={'<script>…</script>'}
+        />
+      </label>
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
+function UtmifyPanel({
+  settings,
+  last,
+  onChange,
+  onSave,
+  onTest,
+}: {
+  settings: AdminSettings;
+  last?: AdminSnapshot["utmifyLast"];
+  onChange: (settings: AdminSettings) => void;
+  onSave: () => void;
+  onTest: () => void;
+}) {
+  const u = settings.utmify;
+  const set = (partial: Partial<AdminSettings["utmify"]>) =>
+    onChange({ ...settings, utmfy: { ...u, ...partial } });
+  return (
+    <div className="max-w-xl space-y-5">
+      <div>
+        <h2 className="text-xl font-semibold">UTMify</h2>
+        <p className="text-sm text-white/50">
+          Script de UTMs no site + envio server-side de PIX gerado e pago para{" "}
+          <a className="underline" href="https://app.utmify.com.br" target="_blank" rel="noreferrer">
+            app.utmify.com.br
+          </a>
+          .
+        </p>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={u.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
+        Ativar UTMify
+      </label>
+      <Field label="Pixel ID" value={u.pixelId} onChange={(pixelId) => set({ pixelId })} placeholder="ID do pixel" />
+      <Field
+        label="API token (x-api-token)"
+        value={u.apiToken}
+        onChange={(apiToken) => set({ apiToken })}
+        placeholder="Cole o token de Integrações → API Credentials"
+        type="password"
+      />
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={u.testMode} onChange={(e) => set({ testMode: e.target.checked })} />
+        Modo teste (não grava venda real na UTMify)
+      </label>
+      {last && (
+        <p className={cn("text-sm", last.ok ? "text-emerald-300" : "text-red-300")}>
+          Último envio: {last.message} · {relativeTime(last.at)}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <SaveButton onClick={onSave} />
+        <button
+          type="button"
+          onClick={onTest}
+          className="h-11 rounded-xl border border-white/15 px-4 text-sm hover:bg-white/5"
+        >
+          Testar API
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ConfigPanel({
+  settings,
+  token,
+  onChange,
+  onSave,
+  onSeed,
+}: {
+  settings: AdminSettings;
+  token: string;
+  onChange: (settings: AdminSettings) => void;
+  onSave: () => void;
+  onSeed: () => void;
+}) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  return (
+    <div className="max-w-xl space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold">Configurações</h2>
+        <p className="text-sm text-white/50">Nome da loja, webhook e senha do painel.</p>
+      </div>
+      <Field label="Nome da loja no admin" value={settings.storeName} onChange={(storeName) => onChange({ ...settings, storeName })} />
+      <Field
+        label="Webhook (POST JSON a cada pedido)"
+        value={settings.webhookUrl}
+        onChange={(webhookUrl) => onChange({ ...settings, webhookUrl })}
+        placeholder="https://..."
+      />
+      <SaveButton onClick={onSave} />
+      <div className="rounded-2xl border border-white/10 p-4">
+        <h3 className="font-medium">Trocar senha</h3>
+        <div className="mt-3 grid gap-3">
+          <Field label="Senha atual" value={current} onChange={setCurrent} type="password" />
+          <Field label="Nova senha" value={next} onChange={setNext} type="password" />
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await localChangePin(current, next);
+                try {
+                  await changeAdminPin({ data: { token, current, next } });
+                } catch {
+                  // senha local já atualizada
+                }
+                toast.success("Senha atualizada");
+                setCurrent("");
+                setNext("");
+              } catch (error) {
+                toast.error(error instanceof Error ? error.message : "Não trocou");
+              }
+            }}
+            className="h-11 rounded-xl bg-white/10 text-sm"
+          >
+            Atualizar senha
+          </button>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => void onSeed()}
+        className="h-11 rounded-xl border border-dashed border-white/20 px-4 text-sm text-white/70"
+      >
+        Preencher com dados de exemplo
+      </button>
+    </div>
+  );
+}
+
+function RecentOrders({ orders }: { orders: OrderSummary[] }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+      <h3 className="text-sm font-medium text-white/70">Últimos pedidos</h3>
+      {orders.length === 0 ? (
+        <Empty text="Os PIX da loja aparecem aqui automaticamente." />
+      ) : (
+        <ul className="mt-3 divide-y divide-white/8">
+          {orders.map((order) => (
+            <li key={order.id} className="flex items-center justify-between py-3 text-sm">
+              <div>
+                <p className="font-medium">{order.id}</p>
+                <p className="text-xs text-white/40">
+                  {order.data.firstName} · {sourceLabel(order.attribution)}
+                </p>
+              </div>
+              <div className="text-right">
+                <p>{money(order.total)}</p>
+                <StatusPill status={orderStatus(order)} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function PixelField({
+  title,
+  enabled,
+  onEnabled,
+  label,
+  value,
+  onValue,
+  placeholder,
+  extra,
+}: {
+  title: string;
+  enabled: boolean;
+  onEnabled: (value: boolean) => void;
+  label: string;
+  value: string;
+  onValue: (value: string) => void;
+  placeholder?: string;
+  extra?: ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+      <label className="flex items-center justify-between gap-3">
+        <span className="font-medium">{title}</span>
+        <input type="checkbox" checked={enabled} onChange={(e) => onEnabled(e.target.checked)} />
+      </label>
+      <div className="mt-3 grid gap-3">
+        <Field label={label} value={value} onChange={onValue} placeholder={placeholder} />
+        {extra}
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  type?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs text-white/50">{label}</span>
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 h-11 w-full rounded-xl border border-white/10 bg-black/20 px-3 text-sm outline-none focus:border-[#E0B761]"
+      />
+    </label>
+  );
+}
+
+function SaveButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="h-11 rounded-xl bg-[#E0B761] px-5 text-sm font-semibold text-[#001E62]"
+    >
+      Salvar
+    </button>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const tone =
+    status === "paid"
+      ? "bg-emerald-500/15 text-emerald-300"
+      : status === "pending"
+        ? "bg-amber-500/15 text-amber-200"
+        : status === "refunded"
+          ? "bg-sky-500/15 text-sky-200"
+          : "bg-red-500/15 text-red-300";
+  return (
+    <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium", tone)}>
+      {statusLabel(status)}
+    </span>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-4">
+      <dt className="text-white/40">{label}</dt>
+      <dd className="text-right">{value}</dd>
+    </div>
+  );
+}
+
+function Empty({ text }: { text: string }) {
+  return (
+    <div className="flex items-center gap-2 rounded-xl border border-dashed border-white/10 px-4 py-8 text-sm text-white/40">
+      <BarChart3 className="h-4 w-4" />
+      {text}
+    </div>
+  );
+}

@@ -1,9 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Minus, Plus, Trash2 } from "lucide-react";
+import { useEffect } from "react";
 import { CheckoutShell } from "@/components/CheckoutShell";
 import { ProductCard } from "@/components/ProductCard";
 import { cartLineKey, useCart } from "@/lib/cart";
 import { formatBRL, getProduct, parsePrice, products } from "@/lib/products";
+import { track } from "@/lib/tracking";
 
 export const Route = createFileRoute("/carrinho")({
   head: () => ({
@@ -37,6 +39,15 @@ function CartPage() {
   const discount = Math.max(0, compare - subtotal);
 
   const recommended = products.slice(0, 8);
+
+  useEffect(() => {
+    track("view_cart", {
+      value: subtotal,
+      content_ids: detailed.map((d) => String(d.item.id)),
+    });
+    // só no mount da sacola
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <CheckoutShell>

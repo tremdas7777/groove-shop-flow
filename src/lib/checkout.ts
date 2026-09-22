@@ -1,3 +1,5 @@
+import { getAttribution, getSessionId, type Attribution } from "@/lib/tracking";
+
 export type PaymentMethod = "pix" | "card" | "boleto";
 export type ShippingMethodId = "gratis" | "padrao" | "expresso";
 
@@ -89,10 +91,16 @@ export interface OrderSummary {
   discount: number;
   total: number;
   pix?: OrderPix;
+  status?: "pending" | "paid" | "refused" | "refunded";
+  attribution?: Attribution;
+  sessionId?: string;
+  notes?: string;
+  purchaseTracked?: boolean;
 }
 
 const CHECKOUT_KEY = "asics-checkout-draft";
 const ORDER_KEY = "asics-last-order";
+const ORDERS_KEY = "asics-orders-ledger";
 
 export function loadCheckoutDraft(): CheckoutData {
   try {
@@ -112,19 +120,57 @@ export function saveCheckoutDraft(data: CheckoutData) {
   }
 }
 
+export function loadOrders(): OrderSummary[] {
+  try {
+    const raw = window.localStorage.getItem(ORDERS_KEY);
+    return raw ? (JSON.parse(raw) as OrderSummary[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeOrders(orders: OrderSummary[]) {
+  try {
+    window.localStorage.setItem(ORDERS_KEY, JSON.stringify(orders.slice(0, 500)));
+  } catch {
+    // ignore
+  }
+}
+
+export function persistOrder(order: OrderSummary, notify = true) {
+  const next: OrderSummary = {
+    ...order,
+    attribution: order.attribution ?? (typeof window === "undefined" ? undefined : getAttribution()),
+    sessionId: order.sessionId ?? (typeof window === "undefined" ? undefined : getSessionId()),
+    status: order.status ?? (order.pix?.status === "paid" ? "paid" : "pending"),
+  };
+  saveOrder(next);
+  void import("@/lib/admin-api")
+    .then(({ upsertStoreOrder }) => upsertStoreOrder({ data: { order: next, notify } }))
+    .catch(() => undefined);
+  return next;
+}
+
 export function saveOrder(order: OrderSummary) {
   try {
     window.localStorage.setItem(ORDER_KEY, JSON.stringify(order));
   } catch {
     // ignore
   }
+  const orders = loadOrders().filter((item) => item.id !== order.id);
+  writeOrders([order, ...orders]);
 }
 
 export function updateOrderPix(pix: OrderPix) {
   const order = loadOrder();
   if (!order) return null;
-  const next = { ...order, pix: { ...order.pix, ...pix } };
-  saveOrder(next);
+  const paid = pix.status === "paid";
+  const next: OrderSummary = {
+    ...order,
+    pix: { ...order.pix, ...pix },
+    status: paid ? "paid" : order.status ?? pix.status,
+  };
+  persistOrder(next);
   return next;
 }
 

@@ -1,0 +1,613 @@
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+import {
+  defaultSettings,
+  emptyPixels,
+  emptyUtmfy,
+  type AdminSettings,
+  type AdminSnapshot,
+  type PresenceVisitor,
+  type PublicTrackingSettings,
+} from "@/lib/admin";
+import type { OrderSummary } from "@/lib/checkout";
+import type { AnalyticsEvent } from "@/lib/tracking";
+
+const MAX_EVENTS = 4000;
+const PRESENCE_TTL_MS = 45_000;
+
+interface Session {
+  token: string;
+  expiresAt: number;
+}
+
+interface Store {
+  settings: AdminSettings;
+  pinHash: string;
+  events: AnalyticsEvent[];
+  orders: OrderSummary[];
+  presence: Map<string, PresenceVisitor>;
+  sessions: Session[];
+  utmfyLast?: { at: string; ok: boolean; message: string };
+  loaded: boolean;
+}
+
+const store: Store = {
+  settings: structuredClone(defaultSettings),
+  pinHash: "",
+  events: [],
+  orders: [],
+  presence: new Map(),
+  sessions: [],
+  loaded: false,
+};
+
+function envPin() {
+  return process.env.ADMIN_PIN ?? "";
+}
+
+async function sha256(value: string) {
+  const { createHash } = await import("node:crypto");
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function randomToken() {
+  const { randomBytes } = await import("node:crypto");
+  return randomBytes(24).toString("hex");
+}
+
+function statePath() {
+  return `${process.cwd()}/data/admin-state.json`;
+}
+
+async function persist() {
+  try {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { dirname } = await import("node:path");
+    const path = statePath();
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(
+      path,
+      JSON.stringify({
+        settings: store.settings,
+        pinHash: store.pinHash,
+        events: store.events.slice(-MAX_EVENTS),
+        orders: store.orders.slice(0, 500),
+        utmfyLast: store.utmifyLast,
+      }),
+    );
+  } catch {
+    // ambiente sem disco gravável
+  }
+}
+
+async function hydrate() {
+  if (store.loaded) return;
+  store.loaded = true;
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(statePath(), "utf8");
+    const data = JSON.parse(raw) as Partial<Store>;
+    if (data.settings) {
+      store.settings = {
+        ...defaultSettings,
+        ...data.settings,
+        pixels: { ...emptyPixels, ...data.settings.pixels },
+        utmfy: { ...emptyUtmfy, ...data.settings.utmify },
+      };
+    }
+    if (typeof data.pinHash === "string") store.pinHash = data.pinHash;
+    if (Array.isArray(data.events)) store.events = data.events;
+    if (Array.isArray(data.orders)) store.orders = data.orders as OrderSummary[];
+    if (data.utmifyLast) store.utmifyLast = data.utmifyLast;
+  } catch {
+    // primeira execução
+  }
+  if (!store.pinHash && envPin()) {
+    store.pinHash = await sha256(envPin());
+    store.settings.hasPin = true;
+  }
+  store.settings.hasPin = Boolean(store.pinHash);
+}
+
+function publicSettings(): PublicTrackingSettings {
+  return {
+    pixels: { ...store.settings.pixels },
+    utmfy: {
+      enabled: store.settings.utmify.enabled,
+      pixelId: store.settings.utmify.pixelId,
+    },
+  };
+}
+
+function maskSettings(): AdminSettings {
+  const token = store.settings.utmify.apiToken;
+  return {
+    ...store.settings,
+    hasPin: Boolean(store.pinHash),
+    utmfy: {
+      ...store.settings.utmify,
+      apiToken: token ? `••••${token.slice(-4)}` : "",
+    },
+  };
+}
+
+function prunePresence() {
+  const cutoff = Date.now() - PRESENCE_TTL_MS;
+  for (const [id, visitor] of store.presence) {
+    if (new Date(visitor.lastTs).getTime() < cutoff) store.presence.delete(id);
+  }
+}
+
+function requireSession(token?: string) {
+  store.sessions = store.sessions.filter((session) => session.expiresAt > Date.now());
+  if (!token || !store.sessions.some((session) => session.token === token)) {
+    throw new Error("Sessão do admin expirada. Entre novamente.");
+  }
+}
+
+function utcStamp(iso?: string) {
+  const date = iso ? new Date(iso) : new Date();
+  return date.toISOString().slice(0, 19).replace("T", " ");
+}
+
+async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid" | "refused" | "refunded") {
+  const token = store.settings.utmify.apiToken;
+  if (!store.settings.utmify.enabled || !token) return;
+  const attr = order.attribution ?? {};
+  const payload = {
+    orderId: order.id,
+    platform: "AsicsStore",
+    paymentMethod: "pix" as const,
+    status,
+    createdAt: utcStamp(order.createdAt),
+    approvedDate: status === "paid" ? utcStamp() : null,
+    refundedAt: status === "refunded" ? utcStamp() : null,
+    customer: {
+      name: `${order.data.firstName} ${order.data.lastName}`.trim(),
+      email: order.data.email,
+      phone: order.data.phone.replace(/\D/g, "") || null,
+      document: order.data.cpf.replace(/\D/g, "") || null,
+      country: "BR",
+    },
+    products: order.items.map((item) => ({
+      id: String(item.id),
+      name: item.title,
+      planId: item.size ?? null,
+      planName: item.size ? `Tam. ${item.size}` : null,
+      quantity: item.qty,
+      priceInCents: Math.round(item.price * 100),
+    })),
+    trackingParameters: {
+      src: attr.src ?? null,
+      sck: attr.sck ?? null,
+      utm_source: attr.utm_source ?? null,
+      utm_campaign: attr.utm_campaign ?? null,
+      utm_medium: attr.utm_medium ?? null,
+      utm_content: attr.utm_content ?? null,
+      utm_term: attr.utm_term ?? null,
+    },
+    commission: {
+      totalPriceInCents: Math.round(order.total * 100),
+      gatewayFeeInCents: 0,
+      userCommissionInCents: Math.round(order.total * 100),
+      currency: "BRL" as const,
+    },
+    ...(store.settings.utmify.testMode ? { isTest: true } : {}),
+  };
+
+  try {
+    const res = await fetch("https://api.utmify.com.br/api-credentials/orders", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-token": token,
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.text();
+    store.utmifyLast = {
+      at: new Date().toISOString(),
+      ok: res.ok,
+      message: res.ok ? `UTMify ${status} · ${order.id}` : body.slice(0, 240) || `HTTP ${res.status}`,
+    };
+  } catch (error) {
+    store.utmifyLast = {
+      at: new Date().toISOString(),
+      ok: false,
+      message: error instanceof Error ? error.message : "Falha ao enviar para a UTMify",
+    };
+  }
+}
+
+async function sendWebhook(kind: string, payload: unknown) {
+  const url = store.settings.webhookUrl.trim();
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, at: new Date().toISOString(), payload }),
+    });
+  } catch {
+    // webhook best-effort
+  }
+}
+
+function upsertOrderLocal(order: OrderSummary) {
+  const index = store.orders.findIndex((item) => item.id === order.id);
+  if (index >= 0) store.orders[index] = { ...store.orders[index], ...order };
+  else store.orders.unshift(order);
+  store.orders = store.orders.slice(0, 500);
+}
+
+function snapshot(): AdminSnapshot {
+  prunePresence();
+  return {
+    settings: maskSettings(),
+    events: store.events.slice(-2000),
+    orders: store.orders,
+    visitors: [...store.presence.values()].sort((a, b) => b.lastTs.localeCompare(a.lastTs)),
+    utmfyLast: store.utmifyLast,
+  };
+}
+
+const eventSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  ts: z.string(),
+  sessionId: z.string(),
+  path: z.string(),
+  title: z.string().optional(),
+  device: z.enum(["mobile", "tablet", "desktop"]),
+  attribution: z.record(z.string().optional()).optional(),
+  props: z.record(z.unknown()).optional(),
+});
+
+const presenceSchema = z.object({
+  sessionId: z.string(),
+  path: z.string(),
+  title: z.string().optional(),
+  device: z.enum(["mobile", "tablet", "desktop"]),
+  attribution: z.record(z.string().optional()).optional(),
+  lastEvent: z.string(),
+});
+
+const orderSchema = z.custom<OrderSummary>((value) => Boolean(value && typeof value === "object" && "id" in value));
+
+export const getPublicTrackingSettings = createServerFn({ method: "GET" }).handler(async () => {
+  await hydrate();
+  return publicSettings();
+});
+
+export const ingestStoreEvent = createServerFn({ method: "POST" })
+  .validator(eventSchema)
+  .handler(async ({ data }) => {
+    await hydrate();
+    if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
+    store.events = [...store.events.filter((event) => event.id !== data.id), data as AnalyticsEvent].slice(-MAX_EVENTS);
+    store.presence.set(data.sessionId, {
+      sessionId: data.sessionId,
+      path: data.path,
+      title: data.title,
+      device: data.device,
+      attribution: data.attribution ?? {},
+      lastEvent: data.name,
+      lastTs: data.ts,
+      startedAt: store.presence.get(data.sessionId)?.startedAt ?? data.ts,
+    });
+    if (store.events.length % 20 === 0) void persist();
+    return { ok: true };
+  });
+
+export const heartbeatVisitor = createServerFn({ method: "POST" })
+  .validator(presenceSchema)
+  .handler(async ({ data }) => {
+    await hydrate();
+    if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
+    const prev = store.presence.get(data.sessionId);
+    store.presence.set(data.sessionId, {
+      sessionId: data.sessionId,
+      path: data.path,
+      title: data.title,
+      device: data.device,
+      attribution: data.attribution ?? {},
+      lastEvent: data.lastEvent,
+      lastTs: new Date().toISOString(),
+      startedAt: prev?.startedAt ?? new Date().toISOString(),
+    });
+    return { ok: true };
+  });
+
+export const upsertStoreOrder = createServerFn({ method: "POST" })
+  .validator(z.object({ order: orderSchema, notify: z.boolean().optional() }))
+  .handler(async ({ data }) => {
+    await hydrate();
+    const prev = store.orders.find((item) => item.id === data.order.id);
+    upsertOrderLocal(data.order);
+    if (data.notify !== false) {
+      const nextStatus = data.order.status ?? data.order.pix?.status ?? "pending";
+      const prevStatus = prev?.status ?? prev?.pix?.status;
+      if (!prev) {
+        await sendUtmfy(data.order, nextStatus === "paid" ? "paid" : "waiting_payment");
+        await sendWebhook("order.created", data.order);
+      } else if (prevStatus !== nextStatus) {
+        const mapped =
+          nextStatus === "paid"
+            ? "paid"
+            : nextStatus === "refunded"
+              ? "refunded"
+              : nextStatus === "refused"
+                ? "refused"
+                : "waiting_payment";
+        await sendUtmfy(data.order, mapped);
+        await sendWebhook("order.updated", data.order);
+      }
+    }
+    await persist();
+    return { ok: true };
+  });
+
+export const adminStatus = createServerFn({ method: "GET" }).handler(async () => {
+  await hydrate();
+  return { hasPin: Boolean(store.pinHash) };
+});
+
+export const adminSetup = createServerFn({ method: "POST" })
+  .validator(z.object({ pin: z.string().min(4).max(32) }))
+  .handler(async ({ data }) => {
+    await hydrate();
+    if (store.pinHash) throw new Error("A senha do admin já foi definida.");
+    store.pinHash = await sha256(data.pin);
+    store.settings.hasPin = true;
+    const token = await randomToken();
+    store.sessions.push({ token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 });
+    await persist();
+    return { token };
+  });
+
+export const adminLogin = createServerFn({ method: "POST" })
+  .validator(z.object({ pin: z.string().min(4).max(32) }))
+  .handler(async ({ data }) => {
+    await hydrate();
+    if (!store.pinHash) throw new Error("Crie a senha do admin primeiro.");
+    const hash = await sha256(data.pin);
+    if (hash !== store.pinHash) throw new Error("Senha incorreta.");
+    const token = await randomToken();
+    store.sessions.push({ token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 });
+    return { token };
+  });
+
+export const getAdminSnapshot = createServerFn({ method: "POST" })
+  .validator(z.object({ token: z.string() }))
+  .handler(async ({ data }) => {
+    await hydrate();
+    requireSession(data.token);
+    return snapshot();
+  });
+
+export const saveAdminSettings = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      token: z.string(),
+      settings: z.object({
+        storeName: z.string(),
+        webhookUrl: z.string(),
+        pixels: z.custom<AdminSettings["pixels"]>(),
+        utmfy: z.object({
+          enabled: z.boolean(),
+          pixelId: z.string(),
+          apiToken: z.string(),
+          testMode: z.boolean(),
+        }),
+      }),
+    }),
+  )
+  .handler(async ({ data }) => {
+    await hydrate();
+    requireSession(data.token);
+    const keepToken =
+      !data.settings.utmify.apiToken || data.settings.utmify.apiToken.includes("•")
+        ? store.settings.utmify.apiToken
+        : data.settings.utmify.apiToken;
+    store.settings = {
+      ...store.settings,
+      storeName: data.settings.storeName,
+      webhookUrl: data.settings.webhookUrl,
+      pixels: { ...emptyPixels, ...data.settings.pixels },
+      utmfy: { ...data.settings.utmify, apiToken: keepToken },
+      hasPin: Boolean(store.pinHash),
+    };
+    await persist();
+    return maskSettings();
+  });
+
+export const changeAdminPin = createServerFn({ method: "POST" })
+  .validator(z.object({ token: z.string(), current: z.string(), next: z.string().min(4).max(32) }))
+  .handler(async ({ data }) => {
+    await hydrate();
+    requireSession(data.token);
+    if ((await sha256(data.current)) !== store.pinHash) throw new Error("Senha atual incorreta.");
+    store.pinHash = await sha256(data.next);
+    await persist();
+    return { ok: true };
+  });
+
+export const updateAdminOrder = createServerFn({ method: "POST" })
+  .validator(
+    z.object({
+      token: z.string(),
+      orderId: z.string(),
+      status: z.enum(["pending", "paid", "refused", "refunded"]).optional(),
+      notes: z.string().optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    await hydrate();
+    requireSession(data.token);
+    const order = store.orders.find((item) => item.id === data.orderId);
+    if (!order) throw new Error("Pedido não encontrado.");
+    if (data.status) {
+      order.status = data.status;
+      if (order.pix) order.pix = { ...order.pix, status: data.status === "pending" ? "pending" : data.status };
+    }
+    if (data.notes !== undefined) order.notes = data.notes;
+    const mapped =
+      order.status === "paid"
+        ? "paid"
+        : order.status === "refunded"
+          ? "refunded"
+          : order.status === "refused"
+            ? "refused"
+            : "waiting_payment";
+    await sendUtmfy(order, mapped);
+    await sendWebhook("order.updated", order);
+    await persist();
+    return order;
+  });
+
+export const testUtmifyConnection = createServerFn({ method: "POST" })
+  .validator(z.object({ token: z.string() }))
+  .handler(async ({ data }) => {
+    await hydrate();
+    requireSession(data.token);
+    if (!store.settings.utmify.apiToken) throw new Error("Cole o token da UTMify antes de testar.");
+    const dummy: OrderSummary = {
+      id: `TEST${Date.now().toString().slice(-6)}`,
+      createdAt: new Date().toISOString(),
+      data: {
+        email: "teste@loja.local",
+        firstName: "Teste",
+        lastName: "UTMify",
+        cpf: "00000000000",
+        phone: "11999999999",
+        cep: "01310100",
+        street: "Av. Paulista",
+        number: "1000",
+        complement: "",
+        neighborhood: "Bela Vista",
+        city: "São Paulo",
+        state: "SP",
+        shippingMethod: "gratis",
+        payment: "pix",
+        cardNumber: "",
+        cardName: "",
+        cardExpiry: "",
+        cardCvv: "",
+        coupon: "",
+        newsletter: false,
+      },
+      items: [
+        {
+          id: 1,
+          qty: 1,
+          title: "Pedido de teste UTMify",
+          price: 1,
+          photo: "",
+        },
+      ],
+      subtotal: 1,
+      shipping: 0,
+      discount: 0,
+      total: 1,
+      status: "pending",
+    };
+    const previous = store.settings.utmify.testMode;
+    store.settings.utmify.testMode = true;
+    await sendUtmfy(dummy, "waiting_payment");
+    store.settings.utmify.testMode = previous;
+    await persist();
+    return store.utmifyLast;
+  });
+
+export const seedAdminDemo = createServerFn({ method: "POST" })
+  .validator(z.object({ token: z.string() }))
+  .handler(async ({ data }) => {
+    await hydrate();
+    requireSession(data.token);
+    const now = Date.now();
+    const sources = [
+      { utm_source: "facebook", utm_medium: "cpc", utm_campaign: "prospecting-tenis" },
+      { utm_source: "tiktok", utm_medium: "cpc", utm_campaign: "video-outlet" },
+      { utm_source: "google", utm_medium: "cpc", utm_campaign: "brand-asics" },
+      { utm_source: "instagram", utm_medium: "social", utm_campaign: "stories-nimbus" },
+    ];
+    for (let i = 0; i < 36; i++) {
+      const attr = sources[i % sources.length];
+      const sessionId = `demo_${i}`;
+      const device = i % 5 === 0 ? "desktop" : i % 4 === 0 ? "tablet" : "mobile";
+      const push = (name: string, minutesAgo: number, path: string, props?: Record<string, unknown>) => {
+        store.events.push({
+          id: `demo_${i}_${name}`,
+          name,
+          ts: new Date(now - minutesAgo * 60_000).toISOString(),
+          sessionId,
+          path,
+          device,
+          attribution: attr,
+          props,
+        });
+      };
+      push("page_view", 80 - i, "/");
+      if (i % 2 === 0) push("view_item", 70 - i, "/produto/1", { content_ids: ["1"], value: 300 });
+      if (i % 3 === 0) push("add_to_cart", 60 - i, "/produto/1", { content_ids: ["1"], value: 300 });
+      if (i % 4 === 0) push("view_cart", 50 - i, "/carrinho");
+      if (i % 5 === 0) push("begin_checkout", 40 - i, "/checkout");
+      if (i % 6 === 0) push("checkout_identify", 35 - i, "/checkout");
+      if (i % 7 === 0) push("checkout_shipping", 30 - i, "/checkout");
+      if (i % 8 === 0) {
+        push("generate_pix", 20 - i, "/pedido", { order_id: `ASDEMO${i}`, value: 300 });
+        const paid = i % 16 === 0;
+        if (paid) push("purchase", 10 - i, "/pedido", { order_id: `ASDEMO${i}`, value: 300 });
+        upsertOrderLocal({
+          id: `ASDEMO${i}`,
+          createdAt: new Date(now - (20 - i) * 60_000).toISOString(),
+          data: {
+            email: `cliente${i}@email.com`,
+            firstName: ["Ana", "Bruno", "Carla", "Diego"][i % 4],
+            lastName: "Silva",
+            cpf: "12345678901",
+            phone: "11988887777",
+            cep: "01310100",
+            street: "Av. Paulista",
+            number: String(100 + i),
+            complement: "",
+            neighborhood: "Bela Vista",
+            city: "São Paulo",
+            state: "SP",
+            shippingMethod: i % 3 === 0 ? "expresso" : i % 2 === 0 ? "padrao" : "gratis",
+            payment: "pix",
+            cardNumber: "",
+            cardName: "",
+            cardExpiry: "",
+            cardCvv: "",
+            coupon: "",
+            newsletter: true,
+          },
+          items: [
+            {
+              id: 1,
+              qty: 1,
+              title: "Tênis Masculino Asics Novablast 5",
+              price: 300,
+              photo: "",
+              size: "40",
+            },
+          ],
+          subtotal: 300,
+          shipping: i % 3 === 0 ? 34.9 : i % 2 === 0 ? 19.9 : 0,
+          discount: 299.99,
+          total: 300 + (i % 3 === 0 ? 34.9 : i % 2 === 0 ? 19.9 : 0),
+          status: paid ? "paid" : "pending",
+          attribution: attr,
+          sessionId,
+          pix: {
+            transactionId: `demo${i}`,
+            qrcode: "000201demo",
+            status: paid ? "paid" : "pending",
+          },
+        });
+      }
+    }
+    await persist();
+    return snapshot();
+  });

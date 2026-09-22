@@ -4,11 +4,13 @@ import { CheckoutShell } from "@/components/CheckoutShell";
 import {
   getShippingMethod,
   loadOrder,
+  persistOrder,
   updateOrderPix,
   type OrderSummary,
 } from "@/lib/checkout";
 import { getMagicPayPix } from "@/lib/magicpay";
 import { formatBRL } from "@/lib/products";
+import { track } from "@/lib/tracking";
 
 export const Route = createFileRoute("/pedido")({
   head: () => ({
@@ -37,7 +39,20 @@ function OrderPage() {
       const result = await getMagicPayPix({ data: { transactionId } });
       if (cancelled || !result.ok) return;
       const next = updateOrderPix(result.pix);
-      if (next) setOrder(next);
+      if (next) {
+        if (result.pix.status === "paid" && !next.purchaseTracked) {
+          track("purchase", {
+            order_id: next.id,
+            value: next.total,
+            content_ids: next.items.map((item) => String(item.id)),
+            content_name: next.items.map((item) => item.title).join(", "),
+          });
+          const marked = persistOrder({ ...next, purchaseTracked: true, status: "paid" });
+          setOrder(marked);
+          return;
+        }
+        setOrder(next);
+      }
     };
 
     void poll();

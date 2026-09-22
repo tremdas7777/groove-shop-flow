@@ -2,11 +2,11 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import { CheckoutShell } from "@/components/CheckoutShell";
-import { customerFirstName, loadOrder } from "@/lib/checkout";
+import { customerFirstName, loadOrder, persistOrder, type OrderSummary } from "@/lib/checkout";
 import { runningKits, type RunningKit } from "@/lib/kits";
+import { createMagicPayPix } from "@/lib/magicpay";
 import { formatBRL } from "@/lib/products";
-import { useCart } from "@/lib/cart";
-import { track } from "@/lib/tracking";
+import { getAttribution, getSessionId, track } from "@/lib/tracking";
 import { orderStatus } from "@/lib/admin";
 import { cn } from "@/lib/utils";
 
@@ -19,9 +19,10 @@ export const Route = createFileRoute("/obrigado")({
 
 function ThankYouPage() {
   const navigate = useNavigate();
-  const { add, clear } = useCart();
   const [order, setOrder] = useState(() => (typeof window === "undefined" ? null : loadOrder()));
   const [picked, setPicked] = useState<number | null>(null);
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState("");
   const [clothes, setClothes] = useState<Record<number, string>>({
     90001: "M",
     90002: "M",
@@ -56,21 +57,93 @@ function ThankYouPage() {
     );
   }
 
-  const alreadyKit = order.items.some((item) => item.id === 90001 || item.id === 90002);
+  const alreadyKit = order.items.some((item) => item.id === 90001 || item.id === 90002) || Boolean(order.upsell);
 
-  const chooseKit = (kit: RunningKit) => {
+  const chooseKit = async (kit: RunningKit) => {
     const size = `${clothes[kit.id] ?? "M"} / ${shoes[kit.id] ?? "40"}`;
-    clear();
-    add(kit.id, 1, size);
+    setPicked(kit.id);
+    setPaying(true);
+    setPayError("");
     track("add_to_cart", {
       content_ids: [String(kit.id)],
       content_name: kit.title,
       value: kit.price,
       size,
       upsell: true,
+      parent_order_id: order.id,
     });
-    setPicked(kit.id);
-    void navigate({ to: "/checkout" });
+    const orderId = `PD${Date.now().toString().slice(-8)}`;
+    const upsellOrder: OrderSummary = {
+      id: orderId,
+      createdAt: new Date().toISOString(),
+      data: { ...order.data, shippingMethod: "gratis", payment: "pix" },
+      items: [
+        {
+          id: kit.id,
+          size,
+          qty: 1,
+          title: kit.title,
+          price: kit.price,
+          photo: kit.photo,
+        },
+      ],
+      subtotal: kit.price,
+      shipping: 0,
+      discount: Math.max(0, kit.compareAt - kit.price),
+      total: kit.price,
+      status: "pending",
+      attribution: order.attribution ?? getAttribution(),
+      sessionId: order.sessionId ?? getSessionId(),
+      parentOrderId: order.id,
+      upsell: true,
+      notes: `Upsell do pedido ${order.id}`,
+    };
+    track("generate_pix", {
+      order_id: orderId,
+      value: kit.price,
+      content_ids: [String(kit.id)],
+      content_name: kit.title,
+      upsell: true,
+      parent_order_id: order.id,
+    });
+    const result = await createMagicPayPix({
+      data: {
+        orderId,
+        amountCents: Math.round(kit.price * 100),
+        shippingCents: 0,
+        customer: {
+          name: order.data.name,
+          email: order.data.email,
+          phone: order.data.phone,
+          cpf: order.data.cpf,
+        },
+        address: {
+          street: order.data.street,
+          streetNumber: order.data.number,
+          neighborhood: order.data.neighborhood,
+          city: order.data.city,
+          state: order.data.state,
+          zipCode: order.data.cep,
+          complement: order.data.complement,
+        },
+        items: [
+          {
+            title: kit.title,
+            unitPrice: Math.round(kit.price * 100),
+            quantity: 1,
+            externalRef: String(kit.id),
+          },
+        ],
+        order: upsellOrder,
+      },
+    });
+    setPaying(false);
+    if (!result.ok) {
+      setPayError(result.error || "Não gerou o PIX do kit. Tente de novo.");
+      return;
+    }
+    await persistOrder({ ...upsellOrder, pix: result.pix, status: "pending" }, true);
+    void navigate({ to: "/pedido" });
   };
 
   return (
@@ -166,14 +239,16 @@ function ThankYouPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => chooseKit(kit)}
-                  className="mt-4 h-12 w-full rounded-full bg-primary text-[14px] font-semibold text-white"
+                  disabled={paying}
+                  onClick={() => void chooseKit(kit)}
+                  className="mt-4 h-12 w-full rounded-full bg-primary text-[14px] font-semibold text-white disabled:opacity-60"
                 >
-                  Quero este kit
+                  {paying && picked === kit.id ? "Gerando PIX do kit..." : "Quero este kit"}
                 </button>
               </article>
             ))}
           </div>
+          {payError && <p className="mt-4 text-center text-[14px] text-red-600">{payError}</p>}
         </section>
       )}
 

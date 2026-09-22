@@ -97,6 +97,8 @@ export interface OrderSummary {
   attribution?: Attribution;
   sessionId?: string;
   notes?: string;
+  parentOrderId?: string;
+  upsell?: boolean;
   purchaseTracked?: boolean;
   utmfySent?: {
     waiting_payment?: boolean;

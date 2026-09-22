@@ -161,11 +161,28 @@ export function seedLocalDemo() {
       });
     }
     if (i % 3 === 0) {
-      push("add_to_cart", 50 - i, "/produto/20014", { content_ids: ["20014"], value: 297 });
+      push("add_to_cart", 50 - i, "/produto/20014", {
+        content_ids: ["20014"],
+        content_name: "Tênis Masculino ASICS Novablast 5 Platium",
+        value: 297,
+        cart_items: [{ id: 20014, title: "Tênis Masculino ASICS Novablast 5 Platium", qty: 1, price: 297, size: "40" }],
+      });
     }
-    if (i % 4 === 0) push("view_cart", 40 - i, "/carrinho");
-    if (i % 5 === 0) push("begin_checkout", 30 - i, "/checkout");
-    if (i % 6 === 0) push("checkout_identify", 25 - i, "/checkout", { email: `cliente${i}@email.com` });
+    if (i % 4 === 0) {
+      push("view_cart", 40 - i, "/carrinho", {
+        value: 297,
+        cart_items: [{ id: 20014, title: "Tênis Masculino ASICS Novablast 5 Platium", qty: 1, price: 297, size: "40" }],
+      });
+    }
+    if (i % 5 === 0) push("begin_checkout", 30 - i, "/checkout", { value: 297 });
+    if (i % 6 === 0) {
+      push("checkout_identify", 25 - i, "/checkout", {
+        email: `cliente${i}@email.com`,
+        name: `${["Ana", "Bruno", "Carla"][i % 3]} Silva`,
+        phone: "11988887777",
+        value: 297,
+      });
+    }
     if (i % 8 === 0) push("checkout_shipping", 20 - i, "/checkout", { shipping: "padrao" });
     if (i % 6 === 0) {
       push("generate_pix", 15 - i, "/pedido", { order_id: `ASDEMO${i}`, value: 316.9 });

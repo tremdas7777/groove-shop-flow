@@ -4,6 +4,8 @@ import { getPublicTrackingSettings, heartbeatVisitor, ingestStoreEvent } from "@
 import type { PublicTrackingSettings } from "@/lib/admin";
 import { listPixelItems } from "@/lib/admin";
 import { loadPublicSettings, touchLocalPresence } from "@/lib/admin-local";
+import { describeCart, readStoredCart } from "@/lib/cart-snapshot";
+import { loadCheckoutDraft } from "@/lib/checkout";
 import {
   captureAttribution,
   detectDevice,
@@ -204,6 +206,8 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isAdminPath(pathname)) return;
     const beat = () => {
+      const cart = describeCart(readStoredCart());
+      const draft = loadCheckoutDraft();
       const payload = {
         sessionId: getSessionId(),
         path: window.location.pathname + window.location.search,
@@ -213,6 +217,14 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         lastEvent: getLastTrackedName(),
         lastTs: new Date().toISOString(),
         startedAt: new Date().toISOString(),
+        cartItems: cart.items,
+        cartValue: cart.value,
+        email: draft.email.trim() || undefined,
+        name: draft.name.trim() || undefined,
+        phone: draft.phone.trim() || undefined,
+        city: draft.city.trim() || undefined,
+        state: draft.state.trim() || undefined,
+        shipping: draft.shippingMethod || undefined,
       };
       touchLocalPresence(payload);
       const sendBeat = async (attempt = 0) => {
@@ -225,6 +237,14 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
               device: payload.device,
               attribution: payload.attribution,
               lastEvent: payload.lastEvent,
+              cartItems: payload.cartItems,
+              cartValue: payload.cartValue,
+              email: payload.email,
+              name: payload.name,
+              phone: payload.phone,
+              city: payload.city,
+              state: payload.state,
+              shipping: payload.shipping,
             },
           });
         } catch {

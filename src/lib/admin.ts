@@ -1,5 +1,5 @@
 import { customerName, type OrderSummary } from "@/lib/checkout";
-import { formatBRL, getProduct } from "@/lib/products";
+import { formatBRL, getProduct, parsePrice } from "@/lib/products";
 import type { AnalyticsEvent, Attribution, DeviceType, FunnelEventName } from "@/lib/tracking";
 
 export type PixelKind = "meta" | "google" | "tiktok" | "kwai" | "snap" | "pinterest" | "custom";
@@ -61,6 +61,15 @@ export interface PublicTrackingSettings {
   utmfy: { enabled: boolean; pixelId: string };
 }
 
+export interface AbandonedCartItem {
+  id: number;
+  title: string;
+  size?: string;
+  qty: number;
+  price: number;
+  photo?: string;
+}
+
 export interface PresenceVisitor {
   sessionId: string;
   path: string;
@@ -70,6 +79,14 @@ export interface PresenceVisitor {
   lastEvent: string;
   lastTs: string;
   startedAt: string;
+  cartItems?: AbandonedCartItem[];
+  cartValue?: number;
+  email?: string;
+  name?: string;
+  phone?: string;
+  city?: string;
+  state?: string;
+  shipping?: string;
 }
 
 export interface AdminSnapshot {
@@ -669,4 +686,339 @@ export function sessionDuration(startedAt: string, lastTs: string) {
   const hr = Math.floor(min / 60);
   const rest = min % 60;
   return rest ? `${hr} h ${rest} min` : `${hr} h`;
+}
+
+export const ABANDON_MS = 5 * 60_000;
+const CART_INTENT = new Set([
+  "add_to_cart",
+  "view_cart",
+  "begin_checkout",
+  "checkout_identify",
+  "checkout_shipping",
+  "checkout_payment",
+  "generate_pix",
+]);
+
+export type AbandonedStage =
+  | "product"
+  | "cart"
+  | "checkout"
+  | "identify"
+  | "shipping"
+  | "payment"
+  | "pix";
+
+export interface AbandonedDropOff {
+  id: AbandonedStage;
+  label: string;
+  hint: string;
+}
+
+export interface AbandonedCart {
+  sessionId: string;
+  lastTs: string;
+  startedAt: string;
+  path: string;
+  device: DeviceType;
+  attribution: Attribution;
+  lastEvent: string;
+  stepIndex: number;
+  dropOff: AbandonedDropOff;
+  items: AbandonedCartItem[];
+  value: number;
+  qty: number;
+  name?: string;
+  email?: string;
+  phone?: string;
+  city?: string;
+  state?: string;
+  shipping?: string;
+  order?: OrderSummary;
+  events: AnalyticsEvent[];
+}
+
+function propText(props: Record<string, unknown> | undefined, key: string) {
+  const value = props?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function normalizeCartItems(raw: unknown): AbandonedCartItem[] {
+  if (!Array.isArray(raw)) return [];
+  const items: AbandonedCartItem[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const id = Number(row.id);
+    const qty = Math.max(1, Number(row.qty) || 1);
+    const price = Number(row.price) || 0;
+    const title = String(row.title ?? (Number.isFinite(id) ? getProduct(id)?.titulo : "") ?? "").trim();
+    if (!title && !Number.isFinite(id)) continue;
+    const product = Number.isFinite(id) ? getProduct(id) : undefined;
+    items.push({
+      id: Number.isFinite(id) ? id : 0,
+      title: title || product?.titulo || `Produto ${id}`,
+      size: typeof row.size === "string" && row.size ? row.size : undefined,
+      qty,
+      price: price || (product ? parsePrice(product.preco) : 0),
+      photo: typeof row.photo === "string" && row.photo ? row.photo : product?.fotos[0],
+    });
+  }
+  return items;
+}
+
+function itemsFromAddToCart(events: AnalyticsEvent[]): AbandonedCartItem[] {
+  const lines = new Map<string, AbandonedCartItem>();
+  for (const event of events) {
+    if (event.name !== "add_to_cart") continue;
+    const ids = event.props?.content_ids;
+    const raw = Array.isArray(ids) ? ids[0] : ids;
+    const id = Number(raw ?? event.path.split("/")[2]);
+    const product = Number.isFinite(id) ? getProduct(id) : undefined;
+    const title = propText(event.props, "content_name") || product?.titulo || productFromEvent(event) || "Produto";
+    const size = propText(event.props, "size") || undefined;
+    const key = `${Number.isFinite(id) ? id : title}-${size ?? ""}`;
+    const prev = lines.get(key);
+    lines.set(key, {
+      id: Number.isFinite(id) ? id : prev?.id ?? 0,
+      title,
+      size,
+      qty: (prev?.qty ?? 0) + 1,
+      price: Number(event.props?.value) || prev?.price || (product ? parsePrice(product.preco) : 0),
+      photo: prev?.photo || product?.fotos[0],
+    });
+  }
+  return [...lines.values()];
+}
+
+function itemsForSession(
+  events: AnalyticsEvent[],
+  visitor?: PresenceVisitor,
+  order?: OrderSummary,
+): AbandonedCartItem[] {
+  if (order?.items?.length) {
+    return order.items.map((item) => ({
+      id: item.id,
+      title: item.title,
+      size: item.size,
+      qty: item.qty,
+      price: item.price,
+      photo: item.photo,
+    }));
+  }
+  if (visitor?.cartItems?.length) return visitor.cartItems;
+  for (const event of [...events].reverse()) {
+    const fromProps = normalizeCartItems(event.props?.cart_items);
+    if (fromProps.length) return fromProps;
+  }
+  return itemsFromAddToCart(events);
+}
+
+function dropOffFor(stepIndex: number, lastEvent: string, path: string): AbandonedDropOff {
+  const page = pageLabel(path);
+  if (stepIndex >= 6 || lastEvent === "generate_pix") {
+    return {
+      id: "pix",
+      label: "Gerou o PIX e não pagou",
+      hint: `Última página: ${page}`,
+    };
+  }
+  if (lastEvent === "checkout_payment") {
+    return {
+      id: "payment",
+      label: "Parou no pagamento",
+      hint: `Chegou no PIX e saiu · ${page}`,
+    };
+  }
+  if (lastEvent === "checkout_shipping" || stepIndex >= 5) {
+    return {
+      id: "shipping",
+      label: "Parou no pagamento",
+      hint: `Informou a entrega e não gerou o PIX · ${page}`,
+    };
+  }
+  if (lastEvent === "checkout_identify" || stepIndex >= 4) {
+    return {
+      id: "identify",
+      label: "Parou depois dos dados",
+      hint: `Preencheu nome e e-mail e não avançou a entrega · ${page}`,
+    };
+  }
+  if (lastEvent === "begin_checkout" || stepIndex >= 3) {
+    return {
+      id: "checkout",
+      label: "Parou na identificação",
+      hint: `Abriu o checkout e não preencheu os dados · ${page}`,
+    };
+  }
+  if (lastEvent === "view_cart" || path.startsWith("/carrinho")) {
+    return {
+      id: "cart",
+      label: "Abriu a sacola e saiu",
+      hint: `Não foi para o checkout · ${page}`,
+    };
+  }
+  return {
+    id: "product",
+    label: "Adicionou à sacola e saiu",
+    hint: `Colocou o produto na sacola e não continuou · ${page}`,
+  };
+}
+
+export function buildAbandonedCarts(
+  events: AnalyticsEvent[],
+  orders: OrderSummary[],
+  visitors: PresenceVisitor[],
+  now = Date.now(),
+): AbandonedCart[] {
+  const grouped = new Map<string, AnalyticsEvent[]>();
+  for (const event of events) {
+    const list = grouped.get(event.sessionId) ?? [];
+    list.push(event);
+    grouped.set(event.sessionId, list);
+  }
+
+  const orderBySession = new Map<string, OrderSummary>();
+  const orphanOrders: OrderSummary[] = [];
+  for (const order of orders) {
+    if (orderStatus(order) === "paid") continue;
+    if (order.sessionId) orderBySession.set(order.sessionId, order);
+    else orphanOrders.push(order);
+  }
+
+  const ids = new Set<string>([
+    ...grouped.keys(),
+    ...visitors.map((visitor) => visitor.sessionId),
+    ...orderBySession.keys(),
+  ]);
+
+  const carts: AbandonedCart[] = [];
+
+  for (const sessionId of ids) {
+    const trail = (grouped.get(sessionId) ?? []).slice().sort((a, b) => a.ts.localeCompare(b.ts));
+    const visitor = visitors.find((item) => item.sessionId === sessionId);
+    const last = trail[trail.length - 1];
+    const lastTs = visitor?.lastTs && (!last || visitor.lastTs >= last.ts) ? visitor.lastTs : last?.ts;
+    const order = orderBySession.get(sessionId);
+    const paid = trail.some((event) => event.name === "purchase") || (order && orderStatus(order) === "paid");
+    if (paid) continue;
+
+    const hasIntent =
+      Boolean(order) ||
+      Boolean(visitor?.cartItems?.length) ||
+      trail.some(
+        (event) =>
+          CART_INTENT.has(event.name) ||
+          normalizeCartItems(event.props?.cart_items).length > 0 ||
+          Number(event.props?.cart_qty) > 0,
+      );
+    if (!hasIntent) continue;
+
+    const startedAt = visitor?.startedAt ?? trail[0]?.ts ?? lastTs ?? order?.createdAt;
+    const stamp = lastTs ?? order?.createdAt;
+    if (!stamp || !startedAt) continue;
+
+    const online = Boolean(visitor && isOnline(visitor.lastTs, now)) || isOnline(stamp, now);
+    if (online || now - new Date(stamp).getTime() < ABANDON_MS) continue;
+
+    const path = visitor?.path ?? last?.path ?? (order ? "/pedido" : "/");
+    const lastMeaningful =
+      [...trail].reverse().find((event) => event.name !== "heartbeat" && event.name !== "page_view") ?? last;
+    const lastEvent =
+      visitor?.lastEvent && visitor.lastEvent !== "heartbeat"
+        ? visitor.lastEvent
+        : lastMeaningful?.name ?? (order ? "generate_pix" : "add_to_cart");
+    const fromEvents = stepIndexFromEvents(trail);
+    const fromPath = stepIndexFromPath(path);
+    const fromOrder = order ? 6 : 0;
+    const stepIndex = Math.max(fromEvents, fromPath, fromOrder);
+    const items = itemsForSession(trail, visitor, order);
+    const eventValue = Number(
+      [...trail].reverse().find((event) => Number(event.props?.value ?? event.props?.total))?.props?.value ?? 0,
+    );
+    const value =
+      order?.total ||
+      visitor?.cartValue ||
+      items.reduce((acc, item) => acc + item.price * item.qty, 0) ||
+      eventValue;
+    if (items.length === 0 && !order && value <= 0) continue;
+
+    const emailEvent = [...trail].reverse().find((event) => propText(event.props, "email"));
+    const nameEvent = [...trail].reverse().find((event) => propText(event.props, "name"));
+    const phoneEvent = [...trail].reverse().find((event) => propText(event.props, "phone"));
+    const cityEvent = [...trail].reverse().find((event) => propText(event.props, "city"));
+    const stateEvent = [...trail].reverse().find((event) => propText(event.props, "state"));
+    const shipEvent = [...trail].reverse().find((event) => propText(event.props, "shipping"));
+
+    carts.push({
+      sessionId,
+      lastTs: stamp,
+      startedAt,
+      path,
+      device: visitor?.device ?? last?.device ?? "mobile",
+      attribution: visitor?.attribution ?? last?.attribution ?? order?.attribution ?? {},
+      lastEvent,
+      stepIndex,
+      dropOff: dropOffFor(stepIndex, lastEvent, path),
+      items,
+      value,
+      qty: items.reduce((acc, item) => acc + item.qty, 0),
+      name: order ? customerName(order.data) : visitor?.name || propText(nameEvent?.props, "name") || undefined,
+      email: order?.data.email || visitor?.email || propText(emailEvent?.props, "email") || undefined,
+      phone: order?.data.phone || visitor?.phone || propText(phoneEvent?.props, "phone") || undefined,
+      city: order?.data.city || visitor?.city || propText(cityEvent?.props, "city") || undefined,
+      state: order?.data.state || visitor?.state || propText(stateEvent?.props, "state") || undefined,
+      shipping:
+        order?.data.shippingMethod || visitor?.shipping || propText(shipEvent?.props, "shipping") || undefined,
+      order,
+      events: trail,
+    });
+  }
+
+  for (const order of orphanOrders) {
+    if (now - new Date(order.createdAt).getTime() < ABANDON_MS) continue;
+    carts.push({
+      sessionId: `order:${order.id}`,
+      lastTs: order.createdAt,
+      startedAt: order.createdAt,
+      path: "/pedido",
+      device: "mobile",
+      attribution: order.attribution ?? {},
+      lastEvent: "generate_pix",
+      stepIndex: 6,
+      dropOff: dropOffFor(6, "generate_pix", "/pedido"),
+      items: order.items.map((item) => ({
+        id: item.id,
+        title: item.title,
+        size: item.size,
+        qty: item.qty,
+        price: item.price,
+        photo: item.photo,
+      })),
+      value: order.total,
+      qty: order.items.reduce((acc, item) => acc + item.qty, 0),
+      name: customerName(order.data),
+      email: order.data.email,
+      phone: order.data.phone,
+      city: order.data.city,
+      state: order.data.state,
+      shipping: order.data.shippingMethod,
+      order,
+      events: [],
+    });
+  }
+
+  return carts.sort((a, b) => b.lastTs.localeCompare(a.lastTs) || b.value - a.value);
+}
+
+export function abandonedStageLabel(id: AbandonedStage) {
+  const map: Record<AbandonedStage, string> = {
+    product: "Saiu no produto",
+    cart: "Saiu na sacola",
+    checkout: "Saiu na identificação",
+    identify: "Saiu na entrega",
+    shipping: "Saiu no pagamento",
+    payment: "Saiu no pagamento",
+    pix: "PIX sem pagar",
+  };
+  return map[id];
 }

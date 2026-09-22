@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Check, ChevronRight } from "lucide-react";
-import { useEffect, useMemo, useState, type HTMLAttributes } from "react";
+import { useEffect, useMemo, useRef, useState, type HTMLAttributes } from "react";
 import { CheckoutShell } from "@/components/CheckoutShell";
 import { useCart } from "@/lib/cart";
 import {
@@ -58,11 +58,12 @@ function CheckoutPage() {
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState("");
 
+  const began = useRef(false);
+
   useEffect(() => {
     const draft = loadCheckoutDraft();
     setData({ ...draft, payment: "pix" });
     setReady(true);
-    track("begin_checkout", { value: 0 });
   }, []);
 
   useEffect(() => {
@@ -88,6 +89,15 @@ function CheckoutPage() {
   const shippingOption = getShippingMethod(data.shippingMethod);
   const shipping = shippingOption.price;
   const total = Math.max(0, subtotal + shipping);
+
+  useEffect(() => {
+    if (!ready || began.current || items.length === 0) return;
+    began.current = true;
+    track("begin_checkout", {
+      value: subtotal,
+      content_ids: detailed.map((d) => String(d.item.id)),
+    });
+  }, [ready, items, subtotal, detailed]);
 
   const patch = (partial: Partial<CheckoutData>) =>
     setData((prev) => ({ ...prev, ...partial }));
@@ -228,6 +238,12 @@ function CheckoutPage() {
         order_id: orderId,
         value: total,
         content_ids: orderItems.map((item) => String(item.id)),
+        email: checkoutData.email,
+        name: checkoutData.name,
+        phone: checkoutData.phone,
+        city: checkoutData.city,
+        state: checkoutData.state,
+        shipping: checkoutData.shippingMethod,
       });
     } else {
       persistOrder(order);
@@ -416,7 +432,12 @@ function CheckoutPage() {
                 type="button"
                 onClick={() => {
                   if (validateId()) {
-                    track("checkout_identify", { email: data.email });
+                    track("checkout_identify", {
+                      email: data.email,
+                      name: data.name.trim(),
+                      phone: data.phone,
+                      value: total,
+                    });
                     setStep("entrega");
                   }
                 }}
@@ -540,8 +561,20 @@ function CheckoutPage() {
                     track("checkout_shipping", {
                       shipping: data.shippingMethod,
                       city: data.city,
+                      state: data.state,
+                      name: data.name.trim(),
+                      email: data.email,
+                      phone: data.phone,
+                      value: total,
                     });
-                    track("checkout_payment");
+                    track("checkout_payment", {
+                      shipping: data.shippingMethod,
+                      city: data.city,
+                      name: data.name.trim(),
+                      email: data.email,
+                      phone: data.phone,
+                      value: total,
+                    });
                     setStep("pagamento");
                   }
                 }}

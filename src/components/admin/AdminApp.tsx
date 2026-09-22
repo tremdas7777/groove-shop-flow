@@ -11,6 +11,7 @@ import {
   Radio,
   Settings,
   ShoppingBag,
+  ShoppingCart,
   Target,
   Trash2,
 } from "lucide-react";
@@ -39,6 +40,7 @@ import {
 import {
   PERIODS,
   PIXEL_KINDS,
+  buildAbandonedCarts,
   buildCampaigns,
   buildFunnel,
   buildLiveSessions,
@@ -74,11 +76,13 @@ import {
   seedLocalDemo,
 } from "@/lib/admin-local";
 import { LiveView } from "@/components/admin/LiveView";
+import { AbandonedCarts } from "@/components/admin/AbandonedCarts";
 
 type Tab =
   | "visao"
   | "live"
   | "pedidos"
+  | "carrinhos"
   | "funil"
   | "trafego"
   | "produtos"
@@ -90,6 +94,7 @@ const tabs: { id: Tab; label: string; icon: typeof Radio }[] = [
   { id: "visao", label: "Visão geral", icon: LayoutDashboard },
   { id: "live", label: "Live view", icon: Radio },
   { id: "pedidos", label: "Pedidos", icon: ShoppingBag },
+  { id: "carrinhos", label: "Carrinhos", icon: ShoppingCart },
   { id: "funil", label: "Progresso", icon: Filter },
   { id: "trafego", label: "Tráfego / UTMs", icon: Megaphone },
   { id: "produtos", label: "Produtos", icon: Package },
@@ -231,6 +236,8 @@ export function AdminApp() {
   const scopedEvents = events.filter((event) => inPeriod(event.ts, period));
   const scopedOrders = orders.filter((order) => inPeriod(order.createdAt, period));
   const liveSessions = buildLiveSessions(events, orders, visitors);
+  const abandoned = buildAbandonedCarts(scopedEvents, scopedOrders, visitors);
+  const abandonedValue = abandoned.reduce((acc, cart) => acc + cart.value, 0);
   const onlineNow = liveSessions.filter((session) => session.online).length;
   const paid = scopedOrders.filter((order) => orderStatus(order) === "paid");
   const pending = scopedOrders.filter((order) => orderStatus(order) === "pending");
@@ -270,6 +277,11 @@ export function AdminApp() {
                 {item.id === "pedidos" && pending.length > 0 && (
                   <span className="ml-auto rounded-full bg-amber-500/20 px-1.5 text-[10px] text-amber-300">
                     {pending.length}
+                  </span>
+                )}
+                {item.id === "carrinhos" && abandoned.length > 0 && (
+                  <span className="ml-auto rounded-full bg-amber-500/20 px-1.5 text-[10px] text-amber-300">
+                    {abandoned.length}
                   </span>
                 )}
               </button>
@@ -333,6 +345,8 @@ export function AdminApp() {
                 paid={paid.length}
                 pending={pending.length}
                 conv={conv}
+                abandoned={abandoned.length}
+                abandonedValue={abandonedValue}
                 events={scopedEvents}
                 orders={scopedOrders}
               />
@@ -344,6 +358,9 @@ export function AdminApp() {
                 token={token}
                 onChange={(next) => setSnap((prev) => (prev ? { ...prev, orders: prev.orders.map((o) => (o.id === next.id ? next : o)) } : prev))}
               />
+            )}
+            {tab === "carrinhos" && (
+              <AbandonedCarts visitors={visitors} events={scopedEvents} orders={scopedOrders} />
             )}
             {tab === "funil" && <FunnelPanel events={scopedEvents} orders={scopedOrders} />}
             {tab === "trafego" && <TrafficPanel events={scopedEvents} orders={scopedOrders} />}
@@ -496,6 +513,8 @@ function Overview({
   paid,
   pending,
   conv,
+  abandoned,
+  abandonedValue,
   events,
   orders,
 }: {
@@ -505,6 +524,8 @@ function Overview({
   paid: number;
   pending: number;
   conv: number;
+  abandoned: number;
+  abandonedValue: number;
   events: AdminSnapshot["events"];
   orders: OrderSummary[];
 }) {
@@ -537,12 +558,17 @@ function Overview({
         <h2 className="text-xl font-semibold">Visão geral</h2>
         <p className="text-sm text-white/50">Funil, PIX e receita em tempo quase real.</p>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         <Card label="Visitantes" value={String(sessions)} hint="Sessões únicas" />
         <Card label="PIX gerados" value={String(pending + paid)} hint={`${pending} aguardando`} />
         <Card label="Pagos" value={String(paid)} hint={`${conv.toFixed(1)}% das sessões`} />
         <Card label="Receita paga" value={money(revenue)} />
         <Card label="PIX em aberto" value={money(pixRevenue)} hint="Ainda não pagos" />
+        <Card
+          label="Carrinhos abandonados"
+          value={String(abandoned)}
+          hint={abandoned ? money(abandonedValue) : "Sacola ou checkout sem compra"}
+        />
       </div>
       <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
         <h3 className="mb-4 text-sm font-medium text-white/70">Sessões, PIX e pagos por hora</h3>

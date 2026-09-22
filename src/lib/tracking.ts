@@ -1,3 +1,5 @@
+import { cartTrackingProps } from "@/lib/cart-snapshot";
+
 export const FUNNEL_EVENTS = [
   "page_view",
   "view_item",
@@ -272,9 +274,20 @@ export function getLastTrackedName() {
   return lastTrackedName;
 }
 
+function mergeTrackProps(name: string, props?: Record<string, unknown>) {
+  const cart = name === "purchase" ? {} : cartTrackingProps();
+  const merged: Record<string, unknown> = { ...cart, ...props };
+  if (!(Number(merged.value) > 0) && Number(cart.value) > 0) merged.value = cart.value;
+  if ((!Array.isArray(merged.content_ids) || merged.content_ids.length === 0) && cart.content_ids) {
+    merged.content_ids = cart.content_ids;
+  }
+  if (!Array.isArray(merged.cart_items) && cart.cart_items) merged.cart_items = cart.cart_items;
+  return Object.keys(merged).length ? merged : props;
+}
+
 export function track(name: FunnelEventName | string, props?: Record<string, unknown>, path?: string) {
   if (typeof window === "undefined") return;
-  const event = buildEvent(name, props, path);
+  const event = buildEvent(name, mergeTrackProps(name, props), path);
   if (name !== "heartbeat") lastTrackedName = name;
   persistLocalEvent(event);
   firePixels(event);

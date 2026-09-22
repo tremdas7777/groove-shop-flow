@@ -31,6 +31,15 @@ function sameLine(a: CartItem, id: number, size?: string) {
   return a.id === id && (a.size ?? "") === (size ?? "");
 }
 
+function writeCart(items: CartItem[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  } catch {
+    // ignora falha de storage
+  }
+}
+
 export function CartProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
@@ -57,28 +66,37 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const add = useCallback((id: number, qty = 1, size?: string) => {
     setItems((prev) => {
       const existing = prev.find((i) => sameLine(i, id, size));
-      if (existing) {
-        return prev.map((i) =>
-          sameLine(i, id, size) ? { ...i, qty: i.qty + qty } : i,
-        );
-      }
-      return [...prev, { id, qty, size }];
+      const next = existing
+        ? prev.map((i) => (sameLine(i, id, size) ? { ...i, qty: i.qty + qty } : i))
+        : [...prev, { id, qty, size }];
+      writeCart(next);
+      return next;
     });
   }, []);
 
   const remove = useCallback((id: number, size?: string) => {
-    setItems((prev) => prev.filter((i) => !sameLine(i, id, size)));
+    setItems((prev) => {
+      const next = prev.filter((i) => !sameLine(i, id, size));
+      writeCart(next);
+      return next;
+    });
   }, []);
 
   const setQty = useCallback((id: number, qty: number, size?: string) => {
-    setItems((prev) =>
-      qty <= 0
-        ? prev.filter((i) => !sameLine(i, id, size))
-        : prev.map((i) => (sameLine(i, id, size) ? { ...i, qty } : i)),
-    );
+    setItems((prev) => {
+      const next =
+        qty <= 0
+          ? prev.filter((i) => !sameLine(i, id, size))
+          : prev.map((i) => (sameLine(i, id, size) ? { ...i, qty } : i));
+      writeCart(next);
+      return next;
+    });
   }, []);
 
-  const clear = useCallback(() => setItems([]), []);
+  const clear = useCallback(() => {
+    writeCart([]);
+    setItems([]);
+  }, []);
 
   const value = useMemo<CartContextValue>(
     () => ({

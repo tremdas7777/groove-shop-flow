@@ -474,9 +474,84 @@ const presenceSchema = z.object({
   device: z.string().catch("mobile"),
   attribution: z.record(z.any()).optional(),
   lastEvent: z.string(),
+  cartItems: z
+    .array(
+      z.object({
+        id: z.number(),
+        title: z.string(),
+        size: z.string().optional(),
+        qty: z.number(),
+        price: z.number(),
+        photo: z.string().optional(),
+      }),
+    )
+    .optional(),
+  cartValue: z.number().optional(),
+  email: z.string().optional(),
+  name: z.string().optional(),
+  phone: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().optional(),
+  shipping: z.string().optional(),
 });
 
 const orderSchema = z.custom<OrderSummary>((value) => Boolean(value && typeof value === "object" && "id" in value));
+
+function textProp(props: Record<string, any> | undefined, key: string) {
+  const value = props?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function cartFromProps(props: Record<string, any> | undefined) {
+  const raw = props?.cart_items;
+  if (!Array.isArray(raw) || raw.length === 0) return { cartItems: undefined as PresenceVisitor["cartItems"], cartValue: undefined as number | undefined };
+  const cartItems = raw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const row = entry as Record<string, unknown>;
+      const id = Number(row.id);
+      const qty = Math.max(1, Number(row.qty) || 1);
+      const price = Number(row.price) || 0;
+      const title = String(row.title ?? "").trim();
+      if (!title && !Number.isFinite(id)) return null;
+      return {
+        id: Number.isFinite(id) ? id : 0,
+        title: title || `Produto ${id}`,
+        size: typeof row.size === "string" && row.size ? row.size : undefined,
+        qty,
+        price,
+        photo: typeof row.photo === "string" && row.photo ? row.photo : undefined,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const cartValue = Number(props?.value) || cartItems.reduce((acc, item) => acc + item.price * item.qty, 0);
+  return { cartItems: cartItems.length ? cartItems : undefined, cartValue: cartValue || undefined };
+}
+
+function keepCartFields(
+  prev: PresenceVisitor | undefined,
+  incoming: {
+    cartItems?: PresenceVisitor["cartItems"];
+    cartValue?: number;
+    email?: string;
+    name?: string;
+    phone?: string;
+    city?: string;
+    state?: string;
+    shipping?: string;
+  },
+) {
+  return {
+    cartItems: incoming.cartItems !== undefined ? incoming.cartItems : prev?.cartItems,
+    cartValue: incoming.cartValue !== undefined ? incoming.cartValue : prev?.cartValue,
+    email: incoming.email || prev?.email,
+    name: incoming.name || prev?.name,
+    phone: incoming.phone || prev?.phone,
+    city: incoming.city || prev?.city,
+    state: incoming.state || prev?.state,
+    shipping: incoming.shipping || prev?.shipping,
+  };
+}
 
 export const getPublicTrackingSettings = createServerFn({ method: "GET" }).handler(async () => {
   await hydrate();
@@ -490,6 +565,8 @@ export const ingestStoreEvent = createServerFn({ method: "POST" })
     if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
     const device = data.device === "desktop" || data.device === "tablet" ? data.device : "mobile";
     const incoming = { ...data, device, attribution: data.attribution ?? {} } as AnalyticsEvent;
+    const prev = store.presence.get(incoming.sessionId);
+    const fromProps = cartFromProps(incoming.props);
     store.events = [...store.events.filter((event) => event.id !== incoming.id), incoming].slice(-MAX_EVENTS);
     store.presence.set(incoming.sessionId, {
       sessionId: incoming.sessionId,
@@ -499,7 +576,17 @@ export const ingestStoreEvent = createServerFn({ method: "POST" })
       attribution: incoming.attribution ?? {},
       lastEvent: incoming.name,
       lastTs: incoming.ts,
-      startedAt: store.presence.get(incoming.sessionId)?.startedAt ?? incoming.ts,
+      startedAt: prev?.startedAt ?? incoming.ts,
+      ...keepCartFields(prev, {
+        cartItems: fromProps.cartItems,
+        cartValue: fromProps.cartValue,
+        email: textProp(incoming.props, "email"),
+        name: textProp(incoming.props, "name"),
+        phone: textProp(incoming.props, "phone"),
+        city: textProp(incoming.props, "city"),
+        state: textProp(incoming.props, "state"),
+        shipping: textProp(incoming.props, "shipping"),
+      }),
     });
     await persist();
     return { ok: true };
@@ -525,6 +612,16 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
       lastEvent,
       lastTs: new Date().toISOString(),
       startedAt: prev?.startedAt ?? new Date().toISOString(),
+      ...keepCartFields(prev, {
+        cartItems: data.cartItems,
+        cartValue: data.cartValue,
+        email: data.email,
+        name: data.name,
+        phone: data.phone,
+        city: data.city,
+        state: data.state,
+        shipping: data.shipping,
+      }),
     });
     await persist();
     return { ok: true };
@@ -813,10 +910,29 @@ export const seedAdminDemo = createServerFn({ method: "POST" })
       };
       push("page_view", 80 - i, "/");
       if (i % 2 === 0) push("view_item", 70 - i, "/produto/1", { content_ids: ["1"], value: 300 });
-      if (i % 3 === 0) push("add_to_cart", 60 - i, "/produto/1", { content_ids: ["1"], value: 300 });
-      if (i % 4 === 0) push("view_cart", 50 - i, "/carrinho");
-      if (i % 5 === 0) push("begin_checkout", 40 - i, "/checkout");
-      if (i % 6 === 0) push("checkout_identify", 35 - i, "/checkout");
+      if (i % 3 === 0) {
+        push("add_to_cart", 60 - i, "/produto/20008", {
+          content_ids: ["20008"],
+          content_name: "Tênis Masculino ASICS Raiden 4",
+          value: 133.33,
+          cart_items: [{ id: 20008, title: "Tênis Masculino ASICS Raiden 4", qty: 1, price: 133.33, size: "40" }],
+        });
+      }
+      if (i % 4 === 0) {
+        push("view_cart", 50 - i, "/carrinho", {
+          value: 133.33,
+          cart_items: [{ id: 20008, title: "Tênis Masculino ASICS Raiden 4", qty: 1, price: 133.33, size: "40" }],
+        });
+      }
+      if (i % 5 === 0) push("begin_checkout", 40 - i, "/checkout", { value: 133.33 });
+      if (i % 6 === 0) {
+        push("checkout_identify", 35 - i, "/checkout", {
+          email: `cliente${i}@email.com`,
+          name: `${["Ana", "Bruno", "Carla", "Diego"][i % 4]} Silva`,
+          phone: "11988887777",
+          value: 133.33,
+        });
+      }
       if (i % 7 === 0) push("checkout_shipping", 30 - i, "/checkout");
       if (i % 8 === 0) {
         push("generate_pix", 20 - i, "/pedido", { order_id: `ASDEMO${i}`, value: 300 });

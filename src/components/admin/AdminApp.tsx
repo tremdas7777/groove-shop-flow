@@ -73,6 +73,7 @@ import {
   localChangePin,
   localCheckPin,
   localHasPin,
+  pinSessionToken,
   saveLocalSettings,
   seedLocalDemo,
 } from "@/lib/admin-local";
@@ -142,7 +143,6 @@ export function AdminApp() {
         visitors: [],
       });
       if (!cancelled) setSnap((prev) => prev ?? local);
-      if (token.startsWith("local_")) return;
       try {
         const next = await getAdminSnapshot({ data: { token } });
         if (cancelled) return;
@@ -163,12 +163,8 @@ export function AdminApp() {
           }
           return prev;
         });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "";
-        if (message.toLowerCase().includes("sessão") || message.toLowerCase().includes("expirada")) {
-          sessionStorage.removeItem(TOKEN_KEY);
-          setToken(null);
-        }
+      } catch {
+        if (!cancelled) setSnap((prev) => prev ?? local);
       }
     };
     void pull();
@@ -194,7 +190,7 @@ export function AdminApp() {
       } catch {
         tokenValue = "";
       }
-      if (!tokenValue) tokenValue = `local_${Date.now().toString(36)}`;
+      if (!tokenValue) tokenValue = await pinSessionToken(pin);
       sessionStorage.setItem(TOKEN_KEY, tokenValue);
       setHasPin(true);
       setToken(tokenValue);

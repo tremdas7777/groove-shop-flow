@@ -18,6 +18,11 @@ const PRESENCE_KEY = "asics-local-presence";
 
 export { TOKEN_KEY };
 
+export async function pinSessionToken(pin: string) {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
+  return `pin_${[...new Uint8Array(bytes)].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+}
+
 async function digest(value: string) {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`asics-admin:${value}`));
   return [...new Uint8Array(bytes)].map((n) => n.toString(16).padStart(2, "0")).join("");

@@ -650,16 +650,21 @@ export function buildLiveSessions(
   const orderBySession = new Map<string, OrderSummary>();
   for (const order of orders) {
     if (order.sessionId) orderBySession.set(order.sessionId, order);
+    orderBySession.set(`order:${order.id}`, order);
   }
 
-  const ids = new Set<string>([...grouped.keys(), ...visitors.map((visitor) => visitor.sessionId)]);
+  const ids = new Set<string>([
+    ...grouped.keys(),
+    ...visitors.map((visitor) => visitor.sessionId),
+    ...orders.map((order) => order.sessionId || `order:${order.id}`),
+  ]);
   const sessions: LiveSession[] = [];
 
   for (const sessionId of ids) {
     const trail = (grouped.get(sessionId) ?? []).slice().sort((a, b) => a.ts.localeCompare(b.ts));
     const visitor = visitors.find((item) => item.sessionId === sessionId);
     const last = trail[trail.length - 1];
-    const lastTs = visitor?.lastTs && (!last || visitor.lastTs >= last.ts) ? visitor.lastTs : last?.ts;
+    const lastTs = visitor?.lastTs && (!last || visitor.lastTs >= last.ts) ? visitor.lastTs : last?.ts ?? orderBySession.get(sessionId)?.createdAt;
     if (!lastTs) continue;
     if (period) {
       if (!inPeriod(lastTs, period, now) && !trail.some((event) => inPeriod(event.ts, period, now))) continue;
@@ -671,7 +676,9 @@ export function buildLiveSessions(
       [...trail].reverse().find((event) => event.name !== "heartbeat" && event.name !== "page_view") ??
       last ??
       ({ name: visitor?.lastEvent || "page_view" } as AnalyticsEvent);
-    const order = orderBySession.get(sessionId);
+    const order =
+      orderBySession.get(sessionId) ??
+      orders.find((item) => item.sessionId === sessionId || `order:${item.id}` === sessionId || item.id === sessionId);
     const fromEvents = stepIndexFromEvents(trail);
     const fromPath = stepIndexFromPath(path);
     const fromOrder = order ? (orderStatus(order) === "paid" ? 7 : 6) : 0;

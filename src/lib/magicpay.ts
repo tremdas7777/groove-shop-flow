@@ -1,5 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import {
+  emptyCheckout,
+  splitCustomerName,
+  type OrderSummary,
+  type ShippingMethodId,
+} from "@/lib/checkout";
 
 export type PixStatus = "pending" | "paid" | "refused" | "refunded" | "unknown";
 
@@ -207,3 +213,125 @@ export const getMagicPayPix = createServerFn({ method: "GET" })
       };
     }
   });
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function parseMetadata(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === "object") return raw as Record<string, unknown>;
+  if (typeof raw === "string") {
+    try {
+      return asRecord(JSON.parse(raw));
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function storeOrderRef(tx: Record<string, unknown>) {
+  const meta = parseMetadata(tx.metadata);
+  return String(tx.externalRef ?? meta.orderId ?? "").trim();
+}
+
+function isStoreTransaction(tx: Record<string, unknown>) {
+  return /^PD/i.test(storeOrderRef(tx));
+}
+
+function guessShipping(cents: number): ShippingMethodId {
+  if (cents >= 3490) return "expresso";
+  if (cents >= 1990) return "padrao";
+  return "gratis";
+}
+
+function orderStatusFromPix(status: PixStatus): NonNullable<OrderSummary["status"]> {
+  if (status === "paid") return "paid";
+  if (status === "refunded") return "refunded";
+  if (status === "refused") return "refused";
+  return "pending";
+}
+
+export async function listMagicPayTransactions() {
+  const rows: Record<string, unknown>[] = [];
+  let page = 1;
+  let totalPages = 1;
+  while (page <= totalPages && page <= 8) {
+    const body = await magicPayFetch(`/v1/transactions?page=${page}`);
+    const data = Array.isArray(body.data) ? body.data : [];
+    for (const row of data) {
+      if (row && typeof row === "object") rows.push(row as Record<string, unknown>);
+    }
+    const pagination = asRecord(body.pagination);
+    totalPages = Math.max(1, Number(pagination.totalPages) || 1);
+    page += 1;
+  }
+  return rows;
+}
+
+export function orderFromMagicPayTx(tx: Record<string, unknown>): OrderSummary | null {
+  if (!isStoreTransaction(tx)) return null;
+  const ref = storeOrderRef(tx);
+  const customer = asRecord(tx.customer);
+  const address = asRecord(customer.address);
+  const document = asRecord(customer.document);
+  const pix = asRecord(tx.pix);
+  const name = String(customer.name ?? "").trim();
+  const parts = splitCustomerName(name);
+  const items = (Array.isArray(tx.items) ? tx.items : [])
+    .map((entry) => {
+      const item = asRecord(entry);
+      const unit = Number(item.unitPrice ?? item.price ?? 0);
+      const qty = Math.max(1, Number(item.quantity) || 1);
+      const rawId = Number(item.externalRef);
+      return {
+        id: Number.isFinite(rawId) ? rawId : 0,
+        title: String(item.title ?? "Produto"),
+        qty,
+        price: unit / 100,
+        photo: "",
+      };
+    })
+    .filter((item) => item.title);
+  const total = Number(tx.amount ?? 0) / 100;
+  const subtotal = items.reduce((sum, item) => sum + item.price * item.qty, 0);
+  const shipping = Math.max(0, Number((Number(tx.amount ?? 0) - Math.round(subtotal * 100)).toFixed(0)));
+  const status = orderStatusFromPix(normalizeStatus(tx.status));
+  const createdAt = String(tx.createdAt ?? tx.paidAt ?? new Date().toISOString());
+  return {
+    id: ref || `MP${tx.id ?? Date.now()}`,
+    createdAt,
+    data: {
+      ...emptyCheckout,
+      email: String(customer.email ?? ""),
+      name,
+      firstName: parts.firstName,
+      lastName: parts.lastName,
+      cpf: String(document.number ?? "").replace(/\D/g, ""),
+      phone: String(customer.phone ?? "").replace(/\D/g, ""),
+      cep: String(address.zipCode ?? "").replace(/\D/g, ""),
+      street: String(address.street ?? ""),
+      number: String(address.streetNumber ?? ""),
+      complement: String(address.complement ?? ""),
+      neighborhood: String(address.neighborhood ?? ""),
+      city: String(address.city ?? ""),
+      state: String(address.state ?? "").toUpperCase().slice(0, 2),
+      shippingMethod: guessShipping(shipping),
+      payment: "pix",
+    },
+    items,
+    subtotal,
+    shipping: shipping / 100,
+    discount: 0,
+    total,
+    pix: {
+      transactionId: (tx.id as number | string) ?? "",
+      qrcode: String(pix.qrcode ?? ""),
+      expirationDate: typeof pix.expirationDate === "string" ? pix.expirationDate : undefined,
+      status,
+    },
+    status,
+    sessionId: `mp_${tx.id ?? ref}`,
+  };
+}

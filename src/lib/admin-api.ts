@@ -35,22 +35,59 @@ const PRESENCE_PREFIX = "https://asics-admin.internal/presence/";
 const ORDER_PREFIX = "https://asics-admin.internal/order/";
 const SESSION_PREFIX = "https://asics-admin.internal/session/";
 
-async function openAdminCache() {
-  return caches.open(CACHE_NAME);
+function defaultCache(): Cache | null {
+  try {
+    const extra = caches as typeof caches & { default?: Cache };
+    return extra.default ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function listAdminCaches() {
+  const found: Cache[] = [];
+  try {
+    found.push(await caches.open(CACHE_NAME));
+  } catch {
+    // named cache indisponível
+  }
+  const fallback = defaultCache();
+  if (fallback) found.push(fallback);
+  return found;
+}
+
+async function putCacheRecord(url: string, body: string) {
+  const response = () =>
+    new Response(body, {
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "max-age=5184000",
+      },
+    });
+  for (const cache of await listAdminCaches()) {
+    try {
+      await cache.put(url, response());
+    } catch {
+      // isolate sem esse cache
+    }
+  }
+}
+
+async function matchCacheRecord(url: string) {
+  for (const cache of await listAdminCaches()) {
+    try {
+      const res = await cache.match(url);
+      if (res) return res;
+    } catch {
+      // próximo cache
+    }
+  }
+  return null;
 }
 
 async function putShard(url: string, data: unknown) {
   try {
-    const cache = await openAdminCache();
-    await cache.put(
-      url,
-      new Response(JSON.stringify(data), {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "max-age=5184000",
-        },
-      }),
-    );
+    await putCacheRecord(url, JSON.stringify(data));
   } catch {
     // Cache API indisponível
   }
@@ -70,8 +107,7 @@ async function persistTrafficShards(input: {
 
 async function getShard<T>(url: string): Promise<T | null> {
   try {
-    const cache = await openAdminCache();
-    const res = await cache.match(url);
+    const res = await matchCacheRecord(url);
     if (!res) return null;
     return (await res.json()) as T;
   } catch {
@@ -81,17 +117,24 @@ async function getShard<T>(url: string): Promise<T | null> {
 
 async function readShards(): Promise<PersistedState | null> {
   try {
-    const cache = await openAdminCache();
-    const keys = await cache.keys();
-    if (!keys.length) return null;
+    const cachesFound = await listAdminCaches();
+    const keys = new Map<string, Request>();
+    for (const cache of cachesFound) {
+      try {
+        for (const req of await cache.keys()) keys.set(req.url, req);
+      } catch {
+        // isolate sem keys()
+      }
+    }
+    if (!keys.size) return null;
     const events: AnalyticsEvent[] = [];
     const presence: PresenceVisitor[] = [];
     const orders: OrderSummary[] = [];
     const sessions: Session[] = [];
     await Promise.all(
-      keys.map(async (req) => {
+      [...keys.values()].map(async (req) => {
         const url = req.url;
-        const res = await cache.match(req);
+        const res = await matchCacheRecord(url);
         if (!res) return;
         try {
           const data = await res.json();
@@ -162,11 +205,6 @@ function envPin() {
 async function sha256(value: string) {
   const { createHash } = await import("node:crypto");
   return createHash("sha256").update(value).digest("hex");
-}
-
-async function randomToken() {
-  const { randomBytes } = await import("node:crypto");
-  return randomBytes(24).toString("hex");
 }
 
 function statePath() {
@@ -338,6 +376,52 @@ function mergePersisted(data: PersistedState) {
   }
 }
 
+function remoteStateUrl() {
+  return (process.env.ADMIN_STATE_URL ?? "").trim();
+}
+
+function remoteStateHeaders() {
+  const token = (process.env.ADMIN_STATE_TOKEN ?? "").trim();
+  return {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+async function readRemoteState(): Promise<PersistedState | null> {
+  const url = remoteStateUrl();
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { headers: remoteStateHeaders(), cache: "no-store" });
+    if (!res.ok) return null;
+    return (await res.json()) as PersistedState;
+  } catch {
+    return null;
+  }
+}
+
+async function writeRemoteState(data: PersistedState) {
+  const url = remoteStateUrl();
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: "PUT",
+      headers: remoteStateHeaders(),
+      body: JSON.stringify({
+        events: data.events,
+        orders: data.orders,
+        presence: data.presence,
+        sessions: data.sessions,
+        pinHash: data.pinHash,
+        writtenAt: data.writtenAt,
+      }),
+    });
+  } catch {
+    // store remoto opcional
+  }
+}
+
 async function readPersisted(): Promise<PersistedState | null> {
   const parts: PersistedState[] = [];
   try {
@@ -348,14 +432,15 @@ async function readPersisted(): Promise<PersistedState | null> {
     // sem arquivo
   }
   try {
-    const cache = await openAdminCache();
-    const res = await cache.match(STATE_CACHE_URL);
+    const res = await matchCacheRecord(STATE_CACHE_URL);
     if (res) parts.push((await res.json()) as PersistedState);
   } catch {
     // sem Cache API
   }
   const shards = await readShards();
   if (shards) parts.push(shards);
+  const remote = await readRemoteState();
+  if (remote) parts.push(remote);
   if (parts.length === 0) return null;
   return parts.reduce((acc, part) => (acc ? unionPersisted(acc, part) : part));
 }
@@ -372,19 +457,11 @@ async function writePersisted(data: PersistedState) {
     // ambiente sem disco gravável
   }
   try {
-    const cache = await openAdminCache();
-    await cache.put(
-      STATE_CACHE_URL,
-      new Response(body, {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "max-age=5184000",
-        },
-      }),
-    );
+    await putCacheRecord(STATE_CACHE_URL, body);
   } catch {
     // Cache API indisponível
   }
+  await writeRemoteState(data);
 }
 
 function keepRicherTraffic(next: PersistedState, disk?: PersistedState | null): PersistedState {
@@ -489,7 +566,24 @@ function pruneStalePresence() {
   store.presence = new Map(ranked.slice(0, MAX_PRESENCE).map((visitor) => [visitor.sessionId, visitor]));
 }
 
+function pinTokenOf(hash: string) {
+  return `pin_${hash}`;
+}
+
+async function ensurePinHash() {
+  if (store.pinHash) return store.pinHash;
+  if (envPin()) {
+    store.pinHash = await sha256(envPin());
+    store.settings.hasPin = true;
+  }
+  return store.pinHash;
+}
+
 async function requireSession(token?: string) {
+  if (token?.startsWith("pin_")) {
+    const hash = await ensurePinHash();
+    if (hash && token === pinTokenOf(hash)) return;
+  }
   store.sessions = store.sessions.filter((session) => session.expiresAt > Date.now());
   if (token && store.sessions.some((session) => session.token === token)) return;
   if (token) {
@@ -781,6 +875,113 @@ function hydrateOrdersFromEvents() {
   }
 }
 
+function ensureOrderTraffic(order: OrderSummary) {
+  const sessionId = order.sessionId || `order:${order.id}`;
+  order.sessionId = sessionId;
+  const paid = order.status === "paid" || order.pix?.status === "paid";
+  const lastEvent = paid ? "purchase" : "generate_pix";
+  const visitor = mergeVisitor(store.presence.get(sessionId), {
+    sessionId,
+    path: paid ? "/obrigado" : "/pedido",
+    title: paid ? "Pedido pago" : "PIX gerado",
+    device: "mobile",
+    attribution: order.attribution ?? {},
+    lastEvent,
+    lastTs: order.createdAt,
+    startedAt: order.createdAt,
+    cartItems: order.items.map((item) => ({
+      id: item.id,
+      title: item.title,
+      size: item.size,
+      qty: item.qty,
+      price: item.price,
+      photo: item.photo,
+    })),
+    cartValue: order.total,
+    email: order.data.email,
+    name: customerName(order.data),
+    phone: order.data.phone,
+    city: order.data.city,
+    state: order.data.state,
+    shipping: order.data.shippingMethod,
+  });
+  store.presence.set(sessionId, visitor);
+  const names = paid ? (["generate_pix", "purchase"] as const) : (["generate_pix"] as const);
+  for (const name of names) {
+    const id = `mp-${name}-${order.id}`;
+    if (store.events.some((event) => event.id === id || (event.name === name && textProp(event.props, "order_id") === order.id))) {
+      continue;
+    }
+    store.events.push({
+      id,
+      name,
+      ts: order.createdAt,
+      sessionId,
+      path: name === "purchase" ? "/obrigado" : "/checkout",
+      title: name === "purchase" ? "Pedido pago" : "Checkout",
+      device: "mobile",
+      attribution: order.attribution ?? {},
+      props: {
+        order_id: order.id,
+        value: order.total,
+        email: order.data.email,
+        name: customerName(order.data),
+        phone: order.data.phone,
+        city: order.data.city,
+        state: order.data.state,
+        shipping: order.data.shippingMethod,
+        cart_items: visitor.cartItems,
+      },
+    });
+  }
+  store.events = store.events
+    .slice()
+    .sort((a, b) => a.ts.localeCompare(b.ts))
+    .slice(-MAX_EVENTS);
+}
+
+let lastMagicSync = 0;
+
+async function syncMagicPayOrders() {
+  if (Date.now() - lastMagicSync < 15_000) return;
+  lastMagicSync = Date.now();
+  try {
+    const { listMagicPayTransactions, orderFromMagicPayTx } = await import("@/lib/magicpay");
+    const rows = await listMagicPayTransactions();
+    let changed = false;
+    for (const row of rows) {
+      const incoming = orderFromMagicPayTx(row);
+      if (!incoming) continue;
+      const prev = store.orders.find(
+        (item) =>
+          item.id === incoming.id ||
+          String(item.pix?.transactionId ?? "") === String(incoming.pix?.transactionId ?? ""),
+      );
+      const merged = mergeOrders(prev, {
+        ...incoming,
+        sessionId: prev?.sessionId || incoming.sessionId,
+        attribution: prev?.attribution ?? incoming.attribution,
+        utmfySent: prev?.utmfySent,
+      });
+      if (!prev || prev.status !== merged.status || prev.pix?.status !== merged.pix?.status) {
+        changed = true;
+      }
+      upsertOrderLocal(merged);
+      ensureOrderTraffic(store.orders.find((item) => item.id === merged.id) ?? merged);
+      if (!prev) {
+        try {
+          await notifyUtmfy(merged);
+        } catch {
+          // pedido já entrou no painel
+        }
+      }
+    }
+    if (changed) await persist();
+  } catch {
+    // MagicPay fora do ar: o painel segue com o que já tem
+  }
+}
+
 export async function commitStoreOrder(order: OrderSummary, notify = false) {
   await hydrate();
   const prev = store.orders.find((item) => item.id === order.id);
@@ -965,7 +1166,7 @@ export const ingestStoreEvent = createServerFn({ method: "POST" })
     }
     const visitor = store.presence.get(incoming.sessionId);
     await persistTrafficShards({ event: incoming, visitor });
-    void persist();
+    await persist();
     return { ok: true };
   });
 
@@ -1004,7 +1205,7 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
       }),
     );
     await persistTrafficShards({ visitor: store.presence.get(data.sessionId) });
-    void persist();
+    await persist();
     return { ok: true };
   });
 
@@ -1027,7 +1228,7 @@ export const adminSetup = createServerFn({ method: "POST" })
     if (store.pinHash) throw new Error("A senha do admin já foi definida.");
     store.pinHash = await sha256(data.pin);
     store.settings.hasPin = true;
-    const token = await randomToken();
+    const token = pinTokenOf(store.pinHash);
     const session = { token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 };
     store.sessions.push(session);
     await persistTrafficShards({ session });
@@ -1040,10 +1241,13 @@ export const adminLogin = createServerFn({ method: "POST" })
   .validator(z.object({ pin: z.string().min(4).max(32) }))
   .handler(async ({ data }) => {
     await hydrate();
-    if (!store.pinHash) throw new Error("Crie a senha do admin primeiro.");
     const hash = await sha256(data.pin);
-    if (hash !== store.pinHash) throw new Error("Senha incorreta.");
-    const token = await randomToken();
+    const expected = (await ensurePinHash()) || store.pinHash;
+    if (!expected) throw new Error("Crie a senha do admin primeiro.");
+    if (hash !== expected) throw new Error("Senha incorreta.");
+    store.pinHash = expected;
+    store.settings.hasPin = true;
+    const token = pinTokenOf(expected);
     const session = { token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 };
     store.sessions.push(session);
     await persistTrafficShards({ session });
@@ -1056,6 +1260,7 @@ export const getAdminSnapshot = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await hydrate();
     await requireSession(data.token);
+    await syncMagicPayOrders();
     return snapshot();
   });
 

@@ -112,7 +112,7 @@ export function AdminApp() {
   const [authError, setAuthError] = useState("");
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>("visao");
-  const [period, setPeriod] = useState<Period>("7d");
+  const [period, setPeriod] = useState<Period>("tudo");
   const [snap, setSnap] = useState<AdminSnapshot | null>(null);
   const [settings, setSettings] = useState<AdminSettings>(defaultSettings);
   const settingsRef = useRef(settings);
@@ -252,7 +252,7 @@ export function AdminApp() {
   const visitors = snap?.visitors ?? [];
   const scopedEvents = events.filter((event) => inPeriod(event.ts, period));
   const scopedOrders = orders.filter((order) => inPeriod(order.createdAt, period));
-  const liveSessions = buildLiveSessions(events, orders, visitors);
+  const liveSessions = buildLiveSessions(scopedEvents, scopedOrders, visitors, Date.now(), period);
   const abandoned = buildAbandonedCarts(scopedEvents, scopedOrders, visitors);
   const abandonedValue = abandoned.reduce((acc, cart) => acc + cart.value, 0);
   const onlineNow = liveSessions.filter((session) => session.online).length;
@@ -368,7 +368,9 @@ export function AdminApp() {
                 orders={scopedOrders}
               />
             )}
-            {tab === "live" && <LiveView visitors={visitors} events={events} orders={orders} />}
+            {tab === "live" && (
+              <LiveView visitors={visitors} events={scopedEvents} orders={scopedOrders} period={period} />
+            )}
             {tab === "pedidos" && (
               <OrdersPanel
                 orders={orders}

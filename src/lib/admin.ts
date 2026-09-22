@@ -578,8 +578,8 @@ export function eventLabel(name: string) {
   return EVENT_LABELS[name] ?? name.replace(/_/g, " ");
 }
 
-export const ONLINE_MS = 90_000;
-export const RECENT_MS = 45 * 60_000;
+export const ONLINE_MS = 3 * 60_000;
+export const RECENT_MS = 60 * 24 * 60 * 60_000;
 
 export function isOnline(iso: string, now = Date.now()) {
   return now - new Date(iso).getTime() <= ONLINE_MS;
@@ -638,6 +638,7 @@ export function buildLiveSessions(
   orders: OrderSummary[],
   visitors: PresenceVisitor[],
   now = Date.now(),
+  period?: Period,
 ): LiveSession[] {
   const grouped = new Map<string, AnalyticsEvent[]>();
   for (const event of events) {
@@ -660,7 +661,9 @@ export function buildLiveSessions(
     const last = trail[trail.length - 1];
     const lastTs = visitor?.lastTs && (!last || visitor.lastTs >= last.ts) ? visitor.lastTs : last?.ts;
     if (!lastTs) continue;
-    if (now - new Date(lastTs).getTime() > RECENT_MS) continue;
+    if (period) {
+      if (!inPeriod(lastTs, period, now) && !trail.some((event) => inPeriod(event.ts, period, now))) continue;
+    } else if (now - new Date(lastTs).getTime() > RECENT_MS) continue;
 
     const startedAt = visitor?.startedAt ?? trail[0]?.ts ?? lastTs;
     const path = visitor?.path ?? last?.path ?? "/";
@@ -683,7 +686,10 @@ export function buildLiveSessions(
     const value = order?.total ?? (eventValue || undefined);
     const identity = order
       ? customerName(order.data)
-      : String([...trail].reverse().find((event) => event.props?.email)?.props?.email ?? "") || undefined;
+      : visitor?.name ||
+        visitor?.email ||
+        String([...trail].reverse().find((event) => event.props?.email)?.props?.email ?? "") ||
+        undefined;
 
     sessions.push({
       sessionId,

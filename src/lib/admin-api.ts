@@ -24,11 +24,92 @@ import {
 } from "@/lib/checkout";
 import type { AnalyticsEvent } from "@/lib/tracking";
 
-const MAX_EVENTS = 8000;
-const MAX_ORDERS = 1000;
-const MAX_PRESENCE = 2500;
-const PRESENCE_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
+const MAX_EVENTS = 15000;
+const MAX_ORDERS = 2000;
+const MAX_PRESENCE = 8000;
+const PRESENCE_KEEP_MS = 60 * 24 * 60 * 60 * 1000;
 const STATE_CACHE_URL = "https://asics-admin.internal/state";
+const CACHE_NAME = "asics-admin";
+const EVENT_PREFIX = "https://asics-admin.internal/event/";
+const PRESENCE_PREFIX = "https://asics-admin.internal/presence/";
+const ORDER_PREFIX = "https://asics-admin.internal/order/";
+const SESSION_PREFIX = "https://asics-admin.internal/session/";
+
+async function openAdminCache() {
+  return caches.open(CACHE_NAME);
+}
+
+async function putShard(url: string, data: unknown) {
+  try {
+    const cache = await openAdminCache();
+    await cache.put(
+      url,
+      new Response(JSON.stringify(data), {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "max-age=5184000",
+        },
+      }),
+    );
+  } catch {
+    // Cache API indisponível
+  }
+}
+
+async function persistTrafficShards(input: {
+  event?: AnalyticsEvent;
+  visitor?: PresenceVisitor;
+  order?: OrderSummary;
+  session?: Session;
+}) {
+  if (input.event?.id) await putShard(`${EVENT_PREFIX}${input.event.id}`, input.event);
+  if (input.visitor?.sessionId) await putShard(`${PRESENCE_PREFIX}${input.visitor.sessionId}`, input.visitor);
+  if (input.order?.id) await putShard(`${ORDER_PREFIX}${input.order.id}`, input.order);
+  if (input.session?.token) await putShard(`${SESSION_PREFIX}${input.session.token}`, input.session);
+}
+
+async function getShard<T>(url: string): Promise<T | null> {
+  try {
+    const cache = await openAdminCache();
+    const res = await cache.match(url);
+    if (!res) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function readShards(): Promise<PersistedState | null> {
+  try {
+    const cache = await openAdminCache();
+    const keys = await cache.keys();
+    if (!keys.length) return null;
+    const events: AnalyticsEvent[] = [];
+    const presence: PresenceVisitor[] = [];
+    const orders: OrderSummary[] = [];
+    const sessions: Session[] = [];
+    await Promise.all(
+      keys.map(async (req) => {
+        const url = req.url;
+        const res = await cache.match(req);
+        if (!res) return;
+        try {
+          const data = await res.json();
+          if (url.startsWith(EVENT_PREFIX) && data?.id) events.push(data);
+          else if (url.startsWith(PRESENCE_PREFIX) && data?.sessionId) presence.push(data);
+          else if (url.startsWith(ORDER_PREFIX) && data?.id) orders.push(data);
+          else if (url.startsWith(SESSION_PREFIX) && data?.token) sessions.push(data);
+        } catch {
+          // shard inválido
+        }
+      }),
+    );
+    if (!events.length && !presence.length && !orders.length && !sessions.length) return null;
+    return { events, presence, orders, sessions };
+  } catch {
+    return null;
+  }
+}
 
 interface Session {
   token: string;
@@ -267,15 +348,16 @@ async function readPersisted(): Promise<PersistedState | null> {
     // sem arquivo
   }
   try {
-    const cache = await caches.open("asics-admin");
+    const cache = await openAdminCache();
     const res = await cache.match(STATE_CACHE_URL);
     if (res) parts.push((await res.json()) as PersistedState);
   } catch {
     // sem Cache API
   }
+  const shards = await readShards();
+  if (shards) parts.push(shards);
   if (parts.length === 0) return null;
-  if (parts.length === 1) return parts[0] ?? null;
-  return unionPersisted(parts[0]!, parts[1]!);
+  return parts.reduce((acc, part) => (acc ? unionPersisted(acc, part) : part));
 }
 
 async function writePersisted(data: PersistedState) {
@@ -290,13 +372,13 @@ async function writePersisted(data: PersistedState) {
     // ambiente sem disco gravável
   }
   try {
-    const cache = await caches.open("asics-admin");
+    const cache = await openAdminCache();
     await cache.put(
       STATE_CACHE_URL,
       new Response(body, {
         headers: {
           "Content-Type": "application/json",
-          "Cache-Control": "max-age=604800",
+          "Cache-Control": "max-age=5184000",
         },
       }),
     );
@@ -359,6 +441,10 @@ async function hydrate() {
     }
     mergePersisted(data);
   }
+  if (!store.pinHash) {
+    const pinned = await getShard<{ pinHash?: string }>("https://asics-admin.internal/pin");
+    if (pinned?.pinHash) store.pinHash = pinned.pinHash;
+  }
   if (!store.pinHash && envPin()) {
     store.pinHash = await sha256(envPin());
     store.settings.hasPin = true;
@@ -403,11 +489,17 @@ function pruneStalePresence() {
   store.presence = new Map(ranked.slice(0, MAX_PRESENCE).map((visitor) => [visitor.sessionId, visitor]));
 }
 
-function requireSession(token?: string) {
+async function requireSession(token?: string) {
   store.sessions = store.sessions.filter((session) => session.expiresAt > Date.now());
-  if (!token || !store.sessions.some((session) => session.token === token)) {
-    throw new Error("Sessão do admin expirada. Entre novamente.");
+  if (token && store.sessions.some((session) => session.token === token)) return;
+  if (token) {
+    const cached = await getShard<Session>(`${SESSION_PREFIX}${token}`);
+    if (cached?.token && cached.expiresAt > Date.now()) {
+      store.sessions.push(cached);
+      return;
+    }
   }
+  throw new Error("Sessão do admin expirada. Entre novamente.");
 }
 
 function utcStamp(iso?: string) {
@@ -693,6 +785,7 @@ export async function commitStoreOrder(order: OrderSummary, notify = false) {
   await hydrate();
   const prev = store.orders.find((item) => item.id === order.id);
   upsertOrderLocal(order);
+  await persistTrafficShards({ order: store.orders.find((item) => item.id === order.id) ?? order });
   await persist();
   if (!notify) return store.orders.find((item) => item.id === order.id) ?? order;
   const next = store.orders.find((item) => item.id === order.id) ?? order;
@@ -865,9 +958,14 @@ export const ingestStoreEvent = createServerFn({ method: "POST" })
     );
     if (incoming.name === "generate_pix" || incoming.name === "purchase") {
       const stub = orderFromEvent(incoming, store.presence.get(incoming.sessionId));
-      if (stub) upsertOrderLocal(stub);
+      if (stub) {
+        upsertOrderLocal(stub);
+        await persistTrafficShards({ order: stub });
+      }
     }
-    await persist();
+    const visitor = store.presence.get(incoming.sessionId);
+    await persistTrafficShards({ event: incoming, visitor });
+    void persist();
     return { ok: true };
   });
 
@@ -905,7 +1003,8 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
         }),
       }),
     );
-    await persist();
+    await persistTrafficShards({ visitor: store.presence.get(data.sessionId) });
+    void persist();
     return { ok: true };
   });
 
@@ -929,7 +1028,10 @@ export const adminSetup = createServerFn({ method: "POST" })
     store.pinHash = await sha256(data.pin);
     store.settings.hasPin = true;
     const token = await randomToken();
-    store.sessions.push({ token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 });
+    const session = { token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 };
+    store.sessions.push(session);
+    await persistTrafficShards({ session });
+    await putShard("https://asics-admin.internal/pin", { pinHash: store.pinHash });
     await persist();
     return { token };
   });
@@ -942,7 +1044,9 @@ export const adminLogin = createServerFn({ method: "POST" })
     const hash = await sha256(data.pin);
     if (hash !== store.pinHash) throw new Error("Senha incorreta.");
     const token = await randomToken();
-    store.sessions.push({ token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 });
+    const session = { token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 };
+    store.sessions.push(session);
+    await persistTrafficShards({ session });
     await persist();
     return { token };
   });
@@ -951,7 +1055,7 @@ export const getAdminSnapshot = createServerFn({ method: "POST" })
   .validator(z.object({ token: z.string() }))
   .handler(async ({ data }) => {
     await hydrate();
-    requireSession(data.token);
+    await requireSession(data.token);
     return snapshot();
   });
 
@@ -974,7 +1078,7 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     await hydrate();
-    requireSession(data.token);
+    await requireSession(data.token);
     const keepToken =
       !data.settings.utmfy.apiToken || data.settings.utmfy.apiToken.includes("•")
         ? store.settings.utmfy.apiToken
@@ -1001,7 +1105,7 @@ export const changeAdminPin = createServerFn({ method: "POST" })
   .validator(z.object({ token: z.string(), current: z.string(), next: z.string().min(4).max(32) }))
   .handler(async ({ data }) => {
     await hydrate();
-    requireSession(data.token);
+    await requireSession(data.token);
     if ((await sha256(data.current)) !== store.pinHash) throw new Error("Senha atual incorreta.");
     store.pinHash = await sha256(data.next);
     await persist();
@@ -1019,7 +1123,7 @@ export const updateAdminOrder = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     await hydrate();
-    requireSession(data.token);
+    await requireSession(data.token);
     const order = store.orders.find((item) => item.id === data.orderId);
     if (!order) throw new Error("Pedido não encontrado.");
     if (data.status) {
@@ -1038,7 +1142,7 @@ export const testUtmifyConnection = createServerFn({ method: "POST" })
   .validator(z.object({ token: z.string() }))
   .handler(async ({ data }) => {
     await hydrate();
-    requireSession(data.token);
+    await requireSession(data.token);
     if (!hasSecret(store.settings.utmfy.apiToken)) throw new Error("Token da UTMify não encontrado no servidor.");
     const dummy: OrderSummary = {
       id: `TEST${Date.now().toString().slice(-6)}`,
@@ -1093,7 +1197,7 @@ export const testMetaConnection = createServerFn({ method: "POST" })
   .validator(z.object({ token: z.string() }))
   .handler(async ({ data }) => {
     await hydrate();
-    requireSession(data.token);
+    await requireSession(data.token);
     const meta = metaCapiTargets(store.settings.pixels)[0] ?? normalizePixels(store.settings.pixels).items.find((item) => item.kind === "meta");
     if (!meta?.pixelId) throw new Error("Cole o Pixel ID da Meta.");
     if (!meta?.accessToken) throw new Error("Cole o token da Meta.");
@@ -1139,7 +1243,7 @@ export const seedAdminDemo = createServerFn({ method: "POST" })
   .validator(z.object({ token: z.string() }))
   .handler(async ({ data }) => {
     await hydrate();
-    requireSession(data.token);
+    await requireSession(data.token);
     const now = Date.now();
     const sources = [
       { utm_source: "facebook", utm_medium: "cpc", utm_campaign: "prospecting-tenis" },

@@ -12,6 +12,7 @@ import {
   sourceLabel,
   type AdminSnapshot,
   type LiveSession,
+  type Period,
 } from "@/lib/admin";
 import type { OrderSummary } from "@/lib/checkout";
 import { cn } from "@/lib/utils";
@@ -45,40 +46,46 @@ export function LiveView({
   visitors,
   events,
   orders,
+  period,
 }: {
   visitors: AdminSnapshot["visitors"];
   events: AdminSnapshot["events"];
   orders: OrderSummary[];
+  period: Period;
 }) {
   const [filter, setFilter] = useState<StageFilter>("todos");
   const [openId, setOpenId] = useState<string | null>(null);
-  const sessions = useMemo(() => buildLiveSessions(events, orders, visitors), [events, orders, visitors]);
+  const sessions = useMemo(
+    () => buildLiveSessions(events, orders, visitors, Date.now(), period),
+    [events, orders, visitors, period],
+  );
   const visible = sessions.filter((session) => matchesFilter(session, filter));
   const online = sessions.filter((session) => session.online);
   const counts = {
     online: online.length,
-    product: sessions.filter((session) => session.stepIndex === 1 && session.online).length,
-    cart: sessions.filter((session) => session.stepIndex === 2 && session.online).length,
-    checkout: sessions.filter((session) => session.stepIndex >= 3 && session.stepIndex <= 5 && session.online).length,
+    product: sessions.filter((session) => session.stepIndex === 1).length,
+    cart: sessions.filter((session) => session.stepIndex === 2).length,
+    checkout: sessions.filter((session) => session.stepIndex >= 3 && session.stepIndex <= 5).length,
     pix: sessions.filter((session) => session.stepIndex >= 6 && session.step.id !== "paid").length,
   };
-  const feed = [...events].reverse().slice(0, 36);
+  const feed = [...events].reverse().slice(0, 80);
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold">Live view</h2>
         <p className="text-sm text-white/50">
-          Onde cada cliente está agora e até onde já avançou na compra.
+          O fluxo inteiro fica salvo por até 60 dias. Use o período no topo para ver hoje, 7 dias, 30
+          dias ou tudo. Quem está na loja agora aparece como online; o restante é histórico.
         </p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <LiveStat label="Online agora" value={String(counts.online)} tone="emerald" />
-        <LiveStat label="Vendo produto" value={String(counts.product)} />
-        <LiveStat label="Na sacola" value={String(counts.cart)} />
-        <LiveStat label="No checkout" value={String(counts.checkout)} />
-        <LiveStat label="PIX em aberto" value={String(counts.pix)} tone="gold" />
+        <LiveStat label="Pararam no produto" value={String(counts.product)} />
+        <LiveStat label="Pararam na sacola" value={String(counts.cart)} />
+        <LiveStat label="Pararam no checkout" value={String(counts.checkout)} />
+        <LiveStat label="PIX sem pagar" value={String(counts.pix)} tone="gold" />
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -101,7 +108,7 @@ export function LiveView({
         <section className="space-y-3">
           {visible.length === 0 && (
             <div className="rounded-2xl border border-dashed border-white/10 px-4 py-10 text-sm text-white/40">
-              Ninguém neste recorte. Abra a loja em outra aba ou gere dados de exemplo.
+              Ninguém neste recorte. Troque o período no topo ou abra a loja em outra aba.
             </div>
           )}
           {visible.map((session) => (

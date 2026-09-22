@@ -179,7 +179,11 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         if (!isAdminPath(window.location.pathname)) injectPixels(settings);
       })
       .catch(() => undefined);
-    return () => setEventIngest(null);
+    const refresh = window.setTimeout(() => captureAttribution(), 1500);
+    return () => {
+      window.clearTimeout(refresh);
+      setEventIngest(null);
+    };
   }, []);
 
   useEffect(() => {

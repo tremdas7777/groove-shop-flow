@@ -21,6 +21,7 @@ export type DeviceType = "mobile" | "tablet" | "desktop";
 export interface Attribution {
   src?: string;
   sck?: string;
+  xcod?: string;
   utm_source?: string;
   utm_campaign?: string;
   utm_medium?: string;
@@ -61,24 +62,108 @@ export function detectDevice(ua = typeof navigator === "undefined" ? "" : naviga
   return "desktop";
 }
 
+export const TRACKING_SEARCH_KEYS = [
+  "src",
+  "sck",
+  "xcod",
+  "utm_source",
+  "utm_campaign",
+  "utm_medium",
+  "utm_content",
+  "utm_term",
+  "fbclid",
+  "gclid",
+  "ttclid",
+] as const;
+
+const UTMIFY_KEYS = TRACKING_SEARCH_KEYS;
+
+export type TrackingSearch = Partial<Record<(typeof TRACKING_SEARCH_KEYS)[number], string>>;
+
+export function pickTrackingSearch(search: Record<string, unknown> = {}): TrackingSearch {
+  const next: TrackingSearch = {};
+  for (const key of TRACKING_SEARCH_KEYS) {
+    const value = cleanAttrValue(typeof search[key] === "string" ? search[key] : undefined);
+    if (value) next[key] = value;
+  }
+  return next;
+}
+
+export function keepTrackingSearch<T extends Record<string, unknown>>(search: T): T & TrackingSearch {
+  return { ...search, ...pickTrackingSearch(search) };
+}
+
+export const attributionHeadScript = `(function(){if(location.pathname.toLowerCase().indexOf("/admin")===0)return;var k=["src","sck","xcod","utm_source","utm_campaign","utm_medium","utm_content","utm_term","fbclid","gclid","ttclid"];var p=new URLSearchParams(location.search);var n={};k.forEach(function(key){var v=p.get(key);if(v&&v!=="null"&&v!=="undefined"){n[key]=v;try{localStorage.setItem(key,v);localStorage.setItem(key+"_exp",new Date(Date.now()+7*864e5).toISOString());}catch(e){}}});if(n.fbclid&&!n.utm_source)n.utm_source="FB";try{var prev=JSON.parse(localStorage.getItem("${ATTR_KEY}")||"{}");var m=Object.assign({},prev,n);if(!m.landing)m.landing=location.pathname+location.search;localStorage.setItem("${ATTR_KEY}",JSON.stringify(m));}catch(e){}})();`;
+
+function cleanAttrValue(value?: string | null) {
+  const next = value?.trim();
+  if (!next || next === "null" || next === "undefined") return undefined;
+  return next;
+}
+
+function mergeAttribution(...parts: Array<Attribution | undefined>): Attribution {
+  const merged: Attribution = {};
+  for (const part of parts) {
+    if (!part) continue;
+    for (const [key, value] of Object.entries(part)) {
+      const clean = cleanAttrValue(value);
+      if (clean && !merged[key]) merged[key] = clean;
+    }
+  }
+  return inferAdSource(merged);
+}
+
+function inferAdSource(attr: Attribution): Attribution {
+  if (attr.utm_source) return attr;
+  if (attr.fbclid) return { ...attr, utm_source: "FB" };
+  if (attr.ttclid) return { ...attr, utm_source: "tiktok" };
+  if (attr.gclid) return { ...attr, utm_source: "google" };
+  return attr;
+}
+
 function readParams() {
   if (typeof window === "undefined") return new URLSearchParams();
   return new URLSearchParams(window.location.search);
 }
 
+function readUtmifyStored(): Attribution {
+  if (typeof window === "undefined") return {};
+  const fromStorage: Attribution = {};
+  for (const key of UTMIFY_KEYS) {
+    try {
+      const exp = window.localStorage.getItem(`${key}_exp`);
+      if (exp && new Date(exp) < new Date()) continue;
+      const value = cleanAttrValue(window.localStorage.getItem(key));
+      if (value) fromStorage[key] = value;
+    } catch {
+      // ignore
+    }
+  }
+  const params = window.utmParams;
+  const fromScript: Attribution = {};
+  if (params && typeof params.get === "function") {
+    for (const key of UTMIFY_KEYS) {
+      const value = cleanAttrValue(params.get(key));
+      if (value) fromScript[key] = value;
+    }
+  }
+  return mergeAttribution(fromScript, fromStorage);
+}
+
 export function captureAttribution(): Attribution {
   const params = readParams();
   const next: Attribution = {
-    src: params.get("src") ?? undefined,
-    sck: params.get("sck") ?? undefined,
-    utm_source: params.get("utm_source") ?? undefined,
-    utm_campaign: params.get("utm_campaign") ?? undefined,
-    utm_medium: params.get("utm_medium") ?? undefined,
-    utm_content: params.get("utm_content") ?? undefined,
-    utm_term: params.get("utm_term") ?? undefined,
-    fbclid: params.get("fbclid") ?? undefined,
-    gclid: params.get("gclid") ?? undefined,
-    ttclid: params.get("ttclid") ?? undefined,
+    src: cleanAttrValue(params.get("src")),
+    sck: cleanAttrValue(params.get("sck")),
+    xcod: cleanAttrValue(params.get("xcod")),
+    utm_source: cleanAttrValue(params.get("utm_source")),
+    utm_campaign: cleanAttrValue(params.get("utm_campaign")),
+    utm_medium: cleanAttrValue(params.get("utm_medium")),
+    utm_content: cleanAttrValue(params.get("utm_content")),
+    utm_term: cleanAttrValue(params.get("utm_term")),
+    fbclid: cleanAttrValue(params.get("fbclid")),
+    gclid: cleanAttrValue(params.get("gclid")),
+    ttclid: cleanAttrValue(params.get("ttclid")),
   };
 
   let stored: Attribution = {};
@@ -88,17 +173,14 @@ export function captureAttribution(): Attribution {
     stored = {};
   }
 
-  const hasNew = Object.values(next).some(Boolean);
-  const merged: Attribution = {
-    ...stored,
-    ...(hasNew ? next : {}),
+  const merged = mergeAttribution(next, readUtmifyStored(), stored, {
     landing: stored.landing || (typeof window !== "undefined" ? window.location.pathname + window.location.search : "/"),
     referrer:
       stored.referrer ||
       (typeof document !== "undefined" && document.referrer && !document.referrer.includes(window.location.host)
         ? document.referrer
         : undefined),
-  };
+  });
 
   try {
     window.localStorage.setItem(ATTR_KEY, JSON.stringify(merged));
@@ -110,12 +192,6 @@ export function captureAttribution(): Attribution {
 
 export function getAttribution(): Attribution {
   if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(ATTR_KEY);
-    if (raw) return JSON.parse(raw) as Attribution;
-  } catch {
-    // ignore
-  }
   return captureAttribution();
 }
 
@@ -176,6 +252,7 @@ declare global {
     snaptr?: ((...args: unknown[]) => void) & { queue?: unknown[] };
     pintrk?: ((...args: unknown[]) => void) & { queue?: unknown[] };
     pixelId?: string;
+    utmParams?: URLSearchParams;
   }
 }
 

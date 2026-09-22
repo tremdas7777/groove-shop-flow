@@ -44,7 +44,10 @@ export function Header({
   const goCategory = (category: string) => {
     onSelectCategory?.(category);
     setMenuOpen(false);
-    void navigate({ to: "/", search: { cat: category } });
+    void navigate({
+      to: "/",
+      search: (prev) => ({ ...prev, cat: category === "Todos" ? undefined : category }),
+    });
   };
 
   return (
@@ -70,7 +73,7 @@ export function Header({
 
           <Link
             to="/"
-            search={{ cat: undefined, q: undefined }}
+            search={(prev) => prev}
             className="justify-self-center lg:justify-self-start"
             aria-label="ASICS — ir para a home"
           >
@@ -235,6 +238,7 @@ export function MobileBottomNav({
     <nav className="fixed inset-x-0 bottom-0 z-40 flex h-[calc(3.5rem+env(safe-area-inset-bottom))] items-center justify-around border-t border-border bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
       <Link
         to="/"
+        search={(prev) => prev}
         aria-label="Ir para a home"
         className="flex h-11 w-11 items-center justify-center text-primary"
       >

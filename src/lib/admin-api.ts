@@ -22,7 +22,7 @@ import {
   emptyCheckout,
   type OrderSummary,
 } from "@/lib/checkout";
-import type { AnalyticsEvent } from "@/lib/tracking";
+import type { AnalyticsEvent, Attribution } from "@/lib/tracking";
 
 const MAX_EVENTS = 15000;
 const MAX_ORDERS = 2000;
@@ -321,7 +321,7 @@ function mergeVisitor(prev: PresenceVisitor | undefined, incoming: PresenceVisit
     city: newer.city || older.city,
     state: newer.state || older.state,
     shipping: newer.shipping || older.shipping,
-    attribution: Object.keys(newer.attribution ?? {}).length ? newer.attribution : older.attribution,
+    attribution: mergeAttribution(older.attribution, newer.attribution),
   };
 }
 
@@ -689,6 +689,51 @@ function utcStamp(iso?: string) {
   return date.toISOString().slice(0, 19).replace("T", " ");
 }
 
+function cleanAttrValue(value?: string | null) {
+  const next = value?.trim();
+  if (!next || next === "null" || next === "undefined") return undefined;
+  return next;
+}
+
+function mergeAttribution(...parts: Array<Attribution | undefined>): Attribution {
+  const merged: Attribution = {};
+  for (const part of parts) {
+    if (!part) continue;
+    for (const [key, value] of Object.entries(part)) {
+      const clean = cleanAttrValue(value);
+      if (clean && !merged[key]) merged[key] = clean;
+    }
+  }
+  if (!merged.utm_source && merged.fbclid) merged.utm_source = "FB";
+  if (!merged.utm_source && merged.ttclid) merged.utm_source = "tiktok";
+  if (!merged.utm_source && merged.gclid) merged.utm_source = "google";
+  if (!merged.sck && merged.xcod) merged.sck = merged.xcod;
+  return merged;
+}
+
+function resolveOrderAttribution(order: OrderSummary): Attribution {
+  const email = order.data.email?.trim().toLowerCase();
+  const phone = order.data.phone.replace(/\D/g, "");
+  const fromEvents = store.events
+    .filter((event) => {
+      if (event.sessionId && event.sessionId === order.sessionId) return true;
+      if (typeof event.props?.order_id === "string" && event.props.order_id === order.id) return true;
+      if (email && String(event.props?.email ?? "").trim().toLowerCase() === email) return true;
+      if (phone && String(event.props?.phone ?? "").replace(/\D/g, "") === phone) return true;
+      return false;
+    })
+    .map((event) => event.attribution);
+  const fromVisitors = [...store.presence.values()]
+    .filter((visitor) => {
+      if (visitor.sessionId && visitor.sessionId === order.sessionId) return true;
+      if (email && visitor.email?.trim().toLowerCase() === email) return true;
+      if (phone && visitor.phone?.replace(/\D/g, "") === phone) return true;
+      return false;
+    })
+    .map((visitor) => visitor.attribution);
+  return mergeAttribution(order.attribution, ...fromEvents, ...fromVisitors);
+}
+
 function utmfyCreatedAtFor(order: OrderSummary) {
   const claimed = store.utmfyClaims.get(order.id)?.createdAt;
   const stored = store.orders.find((item) => item.id === order.id);
@@ -711,7 +756,8 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
     };
     return false;
   }
-  const attr = order.attribution ?? {};
+  const attr = resolveOrderAttribution(order);
+  order.attribution = attr;
   const createdAt = utmfyCreatedAtFor(order);
   const totalCents = Math.max(1, Math.round(order.total * 100));
   const payload: Record<string, unknown> = {
@@ -741,7 +787,7 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
     ),
     trackingParameters: {
       src: attr.src ?? null,
-      sck: attr.sck ?? null,
+      sck: attr.sck ?? attr.xcod ?? null,
       utm_source: attr.utm_source ?? null,
       utm_campaign: attr.utm_campaign ?? null,
       utm_medium: attr.utm_medium ?? null,
@@ -968,7 +1014,7 @@ function mergeOrders(prev: OrderSummary | undefined, incoming: OrderSummary): Or
     data: { ...prev.data, ...incoming.data },
     items: incoming.items?.length ? incoming.items : prev.items,
     pix: prev.pix || incoming.pix ? { ...prev.pix, ...incoming.pix } : incoming.pix,
-    attribution: { ...prev.attribution, ...incoming.attribution },
+    attribution: mergeAttribution(prev.attribution, incoming.attribution),
     sessionId: incoming.sessionId || prev.sessionId,
     notes: incoming.notes || prev.notes,
     purchaseTracked: incoming.purchaseTracked || prev.purchaseTracked,
@@ -1131,9 +1177,10 @@ async function syncMagicPayOrders() {
       const merged = mergeOrders(prev, {
         ...incoming,
         sessionId: prev?.sessionId || incoming.sessionId,
-        attribution: prev?.attribution ?? incoming.attribution,
+        attribution: mergeAttribution(prev?.attribution, incoming.attribution),
         utmfySent: prev?.utmfySent,
       });
+      merged.attribution = resolveOrderAttribution(merged);
       if (!prev || prev.status !== merged.status || prev.pix?.status !== merged.pix?.status) {
         changed = true;
       }

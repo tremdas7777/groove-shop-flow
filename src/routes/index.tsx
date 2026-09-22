@@ -9,9 +9,10 @@ import {
 import { ProductCard } from "@/components/ProductCard";
 import { StoreLayout } from "@/components/StoreLayout";
 import { products } from "@/lib/products";
+import { pickTrackingSearch, type TrackingSearch } from "@/lib/tracking";
 import { cn } from "@/lib/utils";
 
-type HomeSearch = {
+type HomeSearch = TrackingSearch & {
   cat?: string;
   q?: string;
 };
@@ -20,6 +21,7 @@ export const Route = createFileRoute("/")({
   validateSearch: (search: Record<string, unknown>): HomeSearch => ({
     cat: typeof search.cat === "string" ? search.cat : undefined,
     q: typeof search.q === "string" ? search.q : undefined,
+    ...pickTrackingSearch(search),
   }),
   head: () => ({
     meta: [

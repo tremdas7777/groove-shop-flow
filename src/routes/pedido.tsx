@@ -50,6 +50,8 @@ function OrderPage() {
             value: next.total,
             content_ids: next.items.map((item) => String(item.id)),
             content_name: next.items.map((item) => item.title).join(", "),
+            email: next.data.email,
+            phone: next.data.phone,
           });
           void persistOrder({ ...next, purchaseTracked: true, status: "paid" });
           void navigate({ to: "/obrigado" });

@@ -15,6 +15,7 @@ import {
   setEventIngest,
   track,
 } from "@/lib/tracking";
+import { injectTikTokPixel } from "@/lib/tiktok-pixel";
 import { injectUtmifyPixel, UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 
 function isAdminPath(path: string) {
@@ -79,19 +80,7 @@ function injectPixels(settings: PublicTrackingSettings) {
     }
 
     if (item.kind === "tiktok" && item.pixelId && !inited.tiktok.has(item.pixelId)) {
-      if (!window.ttq) {
-        window.ttq = {
-          load: (pixelId: string) => {
-            ensureScript("https://analytics.tiktok.com/i18n/pixel/events.js", {
-              "data-id": pixelId,
-            });
-          },
-          page: () => undefined,
-          track: (..._args: unknown[]) => undefined,
-        };
-      }
-      window.ttq.load(item.pixelId);
-      window.ttq.page();
+      injectTikTokPixel(item.pixelId);
       inited.tiktok.add(item.pixelId);
     }
 

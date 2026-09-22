@@ -98,6 +98,7 @@ export interface AdminSnapshot {
   visitors: PresenceVisitor[];
   utmfyLast?: { at: string; ok: boolean; message: string };
   metaLast?: { at: string; ok: boolean; message: string };
+  tiktokLast?: { at: string; ok: boolean; message: string };
 }
 
 export const emptyPixels: PixelSettings = {
@@ -315,6 +316,17 @@ export function metaCapiTargets(pixels: PixelSettings) {
   return normalizePixels(pixels).items.filter(
     (item) =>
       item.kind === "meta" &&
+      item.enabled &&
+      item.pixelId.trim() &&
+      Boolean(item.accessToken?.trim()) &&
+      !item.accessToken?.includes("•"),
+  );
+}
+
+export function tiktokCapiTargets(pixels: PixelSettings) {
+  return normalizePixels(pixels).items.filter(
+    (item) =>
+      item.kind === "tiktok" &&
       item.enabled &&
       item.pixelId.trim() &&
       Boolean(item.accessToken?.trim()) &&

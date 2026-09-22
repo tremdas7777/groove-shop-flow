@@ -34,6 +34,7 @@ import {
   saveAdminSettings,
   seedAdminDemo,
   testMetaConnection,
+  testTikTokConnection,
   testUtmifyConnection,
   updateAdminOrder,
 } from "@/lib/admin-api";
@@ -402,6 +403,7 @@ export function AdminApp() {
               <PixelsPanel
                 settings={settings}
                 last={snap?.metaLast}
+                tiktokLast={snap?.tiktokLast}
                 token={token}
                 onChange={(next) => {
                   saveLocalSettings(next);
@@ -1045,12 +1047,14 @@ function ProductsPanel({ events, orders }: { events: AdminSnapshot["events"]; or
 function PixelsPanel({
   settings,
   last,
+  tiktokLast,
   token,
   onChange,
   onSave,
 }: {
   settings: AdminSettings;
   last?: AdminSnapshot["metaLast"];
+  tiktokLast?: AdminSnapshot["tiktokLast"];
   token: string;
   onChange: (settings: AdminSettings) => void;
   onSave: () => void;
@@ -1080,7 +1084,7 @@ function PixelsPanel({
       <div>
         <h2 className="text-xl font-semibold">Pixels de tráfego</h2>
         <p className="text-sm text-white/50">
-          Adicione ou remova pixels. O de Meta também envia Purchase pela API de Conversões.
+          Adicione ou remova pixels. Meta e TikTok também enviam a venda paga pela API, não só pelo navegador.
         </p>
       </div>
 
@@ -1143,6 +1147,37 @@ function PixelsPanel({
                 onChange={(adsId) => patchItem(item.id, { adsId })}
                 placeholder="AW-000000000"
               />
+            )}
+            {item.kind === "tiktok" && (
+              <>
+                <Field
+                  label="Token da Events API do TikTok"
+                  value={item.accessToken ?? ""}
+                  onChange={(accessToken) => patchItem(item.id, { accessToken })}
+                  placeholder="Cole o Access Token do Events Manager"
+                  type="password"
+                  secret
+                />
+                {tiktokLast && (
+                  <p className={cn("text-sm", tiktokLast.ok ? "text-emerald-300" : "text-red-300")}>
+                    Último envio TikTok: {tiktokLast.message} · {relativeTime(tiktokLast.at)}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const result = await testTikTokConnection({ data: { token } });
+                      toast[result?.ok ? "success" : "error"](result?.message ?? "Sem retorno");
+                    } catch (error) {
+                      toast.error(error instanceof Error ? error.message : "Falha no teste TikTok");
+                    }
+                  }}
+                  className="h-11 rounded-xl border border-white/15 px-4 text-sm hover:bg-white/5"
+                >
+                  Testar TikTok
+                </button>
+              </>
             )}
             {item.kind === "meta" && (
               <>

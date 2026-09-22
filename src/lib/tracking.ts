@@ -1,4 +1,5 @@
 import { cartTrackingProps } from "@/lib/cart-snapshot";
+import { identifyTikTok, trackTikTok } from "@/lib/tiktok-pixel";
 
 export const FUNNEL_EVENTS = [
   "page_view",
@@ -261,7 +262,6 @@ export function buildEvent(
 declare global {
   interface Window {
     fbq?: (...args: unknown[]) => void;
-    ttq?: { track: (...args: unknown[]) => void; page: () => void; load: (id: string) => void };
     gtag?: (...args: unknown[]) => void;
     dataLayer?: unknown[];
     kwaiq?: { track: (...args: unknown[]) => void; load: (id: string) => void };
@@ -308,21 +308,60 @@ export function firePixels(event: AnalyticsEvent) {
     );
   }
 
+  const email = String(event.props?.email ?? "").trim();
+  const phone = String(event.props?.phone ?? "").trim();
+  identifyTikTok({
+    email: email || undefined,
+    phone: phone || undefined,
+    externalId: event.sessionId,
+  });
+  if (event.name === "page_view") {
+    window.ttq?.page?.();
+  }
   const ttMap: Record<string, string> = {
     view_item: "ViewContent",
     add_to_cart: "AddToCart",
+    view_cart: "AddToCart",
     begin_checkout: "InitiateCheckout",
-    generate_pix: "AddPaymentInfo",
+    checkout_identify: "InitiateCheckout",
+    checkout_payment: "AddPaymentInfo",
+    generate_pix: "PlaceAnOrder",
     purchase: "CompletePayment",
     search: "Search",
   };
   const tt = ttMap[event.name];
-  if (tt && window.ttq?.track) {
-    window.ttq.track(tt, {
+  if (tt) {
+    const cartItems = Array.isArray(event.props?.cart_items) ? event.props.cart_items : [];
+    const contents = cartItems.length
+      ? cartItems.map((item: { id?: number; title?: string; qty?: number; price?: number }) => ({
+          content_id: String(item.id ?? ""),
+          content_type: "product",
+          content_name: item.title,
+          quantity: item.qty ?? 1,
+          price: item.price,
+        }))
+      : contentIds.map((id) => ({
+          content_id: id,
+          content_type: "product",
+          content_name: contentName || undefined,
+        }));
+    trackTikTok(tt, {
       value: value || undefined,
       currency,
-      contents: contentIds.map((id) => ({ content_id: id, content_type: "product" })),
+      contents,
+      content_type: "product",
+      content_id: contentIds[0],
+      content_name: contentName || undefined,
+      event_id: String(event.props?.event_id ?? event.props?.order_id ?? event.id),
     });
+    if (event.name === "generate_pix") {
+      trackTikTok("AddPaymentInfo", {
+        value: value || undefined,
+        currency,
+        contents,
+        event_id: `${event.props?.order_id ?? event.id}-pay`,
+      });
+    }
   }
 
   const gMap: Record<string, string> = {

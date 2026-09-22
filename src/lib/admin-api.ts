@@ -6,6 +6,7 @@ import {
   applySavedPixels,
   mergePixelLists,
   metaCapiTargets,
+  tiktokCapiTargets,
   normalizePixels,
   publicPixels,
   maskPixelSettings,
@@ -214,6 +215,7 @@ interface Store {
   utmfyClaims: Map<string, UtmfySent>;
   utmfyLast?: { at: string; ok: boolean; message: string };
   metaLast?: { at: string; ok: boolean; message: string };
+  tiktokLast?: { at: string; ok: boolean; message: string };
   loaded: boolean;
 }
 
@@ -227,6 +229,7 @@ interface PersistedState {
   utmfyClaims?: Record<string, UtmfySent>;
   utmfyLast?: Store["utmfyLast"];
   metaLast?: Store["metaLast"];
+  tiktokLast?: Store["tiktokLast"];
   writtenAt?: number;
 }
 
@@ -272,6 +275,7 @@ function serializeState(): PersistedState {
     utmfyClaims: Object.fromEntries(store.utmfyClaims),
     utmfyLast: store.utmfyLast,
     metaLast: store.metaLast,
+    tiktokLast: store.tiktokLast,
     writtenAt: Date.now(),
   };
 }
@@ -282,6 +286,41 @@ function hasSecret(value?: string) {
 
 function envUtmfyToken() {
   return (process.env.UTMIFY_API_TOKEN ?? process.env.UTMIFY_TOKEN ?? "").trim();
+}
+
+function envTikTokPixel() {
+  return (process.env.TIKTOK_PIXEL_ID ?? "").trim();
+}
+
+function envTikTokToken() {
+  return (process.env.TIKTOK_ACCESS_TOKEN ?? "").trim();
+}
+
+function ensureTikTokFromEnv() {
+  const pixelId = envTikTokPixel();
+  const accessToken = envTikTokToken();
+  if (!pixelId && !accessToken) return;
+  const pixels = normalizePixels(store.settings.pixels);
+  const current = pixels.items.find((item) => item.kind === "tiktok");
+  if (!current) {
+    store.settings.pixels = normalizePixels({
+      ...pixels,
+      items: [
+        ...pixels.items,
+        {
+          id: "env-tiktok",
+          kind: "tiktok",
+          enabled: Boolean(pixelId),
+          pixelId,
+          accessToken,
+        },
+      ],
+    });
+    return;
+  }
+  if (pixelId && !current.pixelId.trim()) current.pixelId = pixelId;
+  if (accessToken && !hasSecret(current.accessToken)) current.accessToken = accessToken;
+  store.settings.pixels = normalizePixels({ ...pixels, items: pixels.items });
 }
 
 function mergeUtmfy(disk?: AdminSettings["utmfy"]) {
@@ -381,6 +420,10 @@ function unionPersisted(left: PersistedState, right: PersistedState): PersistedS
         : right.utmfyLast,
     metaLast:
       left.metaLast && (!right.metaLast || left.metaLast.at > right.metaLast.at) ? left.metaLast : right.metaLast,
+    tiktokLast:
+      left.tiktokLast && (!right.tiktokLast || left.tiktokLast.at > right.tiktokLast.at)
+        ? left.tiktokLast
+        : right.tiktokLast,
     writtenAt: Math.max(left.writtenAt ?? 0, right.writtenAt ?? 0),
   };
 }
@@ -460,6 +503,9 @@ function mergePersisted(data: PersistedState) {
   }
   if (data.metaLast && (!store.metaLast || data.metaLast.at > store.metaLast.at)) {
     store.metaLast = data.metaLast;
+  }
+  if (data.tiktokLast && (!store.tiktokLast || data.tiktokLast.at > store.tiktokLast.at)) {
+    store.tiktokLast = data.tiktokLast;
   }
 }
 
@@ -617,6 +663,7 @@ async function hydrate() {
   store.settings.hasPin = Boolean(store.pinHash);
   await loadUtmfyToken();
   mergeUtmfy(store.settings.utmfy);
+  ensureTikTokFromEnv();
 }
 
 function publicSettings(): PublicTrackingSettings {
@@ -1000,6 +1047,95 @@ async function sendMetaCapi(order: OrderSummary, eventName: "Purchase" | "AddPay
   }
 }
 
+function tiktokEventName(eventName: "Purchase" | "AddPaymentInfo" | "InitiateCheckout") {
+  if (eventName === "Purchase") return "CompletePayment";
+  if (eventName === "AddPaymentInfo") return "PlaceAnOrder";
+  return "InitiateCheckout";
+}
+
+function brPhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (!digits) return "";
+  return digits.startsWith("55") ? digits : `55${digits}`;
+}
+
+async function sendTikTokEvents(order: OrderSummary, eventName: "Purchase" | "AddPaymentInfo" | "InitiateCheckout") {
+  const targets = tiktokCapiTargets(store.settings.pixels);
+  if (targets.length === 0) return;
+  const event = tiktokEventName(eventName);
+  const email = order.data.email.trim().toLowerCase();
+  const phone = brPhone(order.data.phone);
+  const payload = {
+    event_source: "web",
+    event_source_id: "",
+    data: [
+      {
+        event,
+        event_time: Math.floor(Date.now() / 1000),
+        event_id: eventName === "Purchase" ? order.id : `${order.id}-${event}`,
+        user: {
+          email: email ? await hashUser(email) : undefined,
+          phone: phone ? await hashUser(phone) : undefined,
+          external_id: order.sessionId ? await hashUser(order.sessionId) : undefined,
+          ttclid: order.attribution?.ttclid,
+        },
+        page: {
+          url: eventName === "Purchase" ? "https://outletasics.lovable.app/obrigado" : "https://outletasics.lovable.app/pedido",
+        },
+        properties: {
+          currency: "BRL",
+          value: order.total,
+          content_type: "product",
+          contents: order.items.map((item) => ({
+            content_id: String(item.id),
+            content_type: "product",
+            content_name: item.title,
+            quantity: item.qty,
+            price: item.price,
+          })),
+        },
+      },
+    ],
+  };
+  try {
+    let lastOk = false;
+    let lastMessage = "";
+    for (const target of targets) {
+      const res = await fetch("https://business-api.tiktok.com/open_api/v1.3/event/track/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Token": target.accessToken?.trim() ?? "",
+        },
+        body: JSON.stringify({ ...payload, event_source_id: target.pixelId.trim() }),
+      });
+      const body = await res.text();
+      let parsed: { code?: number; message?: string } = {};
+      try {
+        parsed = JSON.parse(body) as { code?: number; message?: string };
+      } catch {
+        parsed = {};
+      }
+      lastOk = res.ok && (parsed.code === undefined || parsed.code === 0);
+      lastMessage = lastOk
+        ? `TikTok ${event} · ${order.id}`
+        : parsed.message || body.slice(0, 240) || `HTTP ${res.status}`;
+      if (!lastOk) break;
+    }
+    store.tiktokLast = {
+      at: new Date().toISOString(),
+      ok: lastOk,
+      message: lastMessage,
+    };
+  } catch (error) {
+    store.tiktokLast = {
+      at: new Date().toISOString(),
+      ok: false,
+      message: error instanceof Error ? error.message : "Falha no TikTok Events API",
+    };
+  }
+}
+
 async function sendWebhook(kind: string, payload: unknown) {
   const url = store.settings.webhookUrl.trim();
   if (!url) return;
@@ -1226,11 +1362,19 @@ export async function commitStoreOrder(order: OrderSummary, notify = false) {
     const prevStatus = prev?.status ?? prev?.pix?.status;
     await notifyUtmfy(next);
     if (!prev) {
-      if (nextStatus === "paid") await sendMetaCapi(next, "Purchase");
-      else await sendMetaCapi(next, "AddPaymentInfo");
+      if (nextStatus === "paid") {
+        await sendMetaCapi(next, "Purchase");
+        await sendTikTokEvents(next, "Purchase");
+      } else {
+        await sendMetaCapi(next, "AddPaymentInfo");
+        await sendTikTokEvents(next, "AddPaymentInfo");
+      }
       await sendWebhook("order.created", next);
     } else if (prevStatus !== nextStatus) {
-      if (nextStatus === "paid") await sendMetaCapi(next, "Purchase");
+      if (nextStatus === "paid") {
+        await sendMetaCapi(next, "Purchase");
+        await sendTikTokEvents(next, "Purchase");
+      }
       await sendWebhook("order.updated", next);
     }
   } catch {
@@ -1249,6 +1393,7 @@ function snapshot(): AdminSnapshot {
     visitors: [...store.presence.values()].sort((a, b) => b.lastTs.localeCompare(a.lastTs)),
     utmfyLast: store.utmfyLast,
     metaLast: store.metaLast,
+    tiktokLast: store.tiktokLast,
   };
 }
 
@@ -1572,7 +1717,10 @@ export const updateAdminOrder = createServerFn({ method: "POST" })
     }
     if (data.notes !== undefined) order.notes = data.notes;
     await notifyUtmfy(order);
-    if (order.status === "paid") await sendMetaCapi(order, "Purchase");
+    if (order.status === "paid") {
+      await sendMetaCapi(order, "Purchase");
+      await sendTikTokEvents(order, "Purchase");
+    }
     await sendWebhook("order.updated", order);
     await persist();
     return order;
@@ -1677,6 +1825,54 @@ export const testMetaConnection = createServerFn({ method: "POST" })
     await sendMetaCapi(dummy, "InitiateCheckout");
     await persist();
     return store.metaLast;
+  });
+
+export const testTikTokConnection = createServerFn({ method: "POST" })
+  .validator(z.object({ token: z.string() }))
+  .handler(async ({ data }) => {
+    await hydrate();
+    await requireSession(data.token);
+    const tiktok =
+      tiktokCapiTargets(store.settings.pixels)[0] ??
+      normalizePixels(store.settings.pixels).items.find((item) => item.kind === "tiktok");
+    if (!tiktok?.pixelId) throw new Error("Cole o Pixel ID do TikTok.");
+    if (!tiktok?.accessToken) throw new Error("Cole o token da Events API do TikTok.");
+    const dummy: OrderSummary = {
+      id: `TTTEST${Date.now().toString().slice(-6)}`,
+      createdAt: new Date().toISOString(),
+      data: {
+        email: "teste@loja.local",
+        name: "Teste TikTok",
+        firstName: "Teste",
+        lastName: "TikTok",
+        cpf: "00000000000",
+        phone: "11999999999",
+        cep: "01310100",
+        street: "Av. Paulista",
+        number: "1000",
+        complement: "",
+        neighborhood: "Bela Vista",
+        city: "São Paulo",
+        state: "SP",
+        shippingMethod: "gratis",
+        payment: "pix",
+        cardNumber: "",
+        cardName: "",
+        cardExpiry: "",
+        cardCvv: "",
+        coupon: "",
+        newsletter: false,
+      },
+      items: [{ id: 1, qty: 1, title: "Teste TikTok Events", price: 1, photo: "" }],
+      subtotal: 1,
+      shipping: 0,
+      discount: 0,
+      total: 1,
+      status: "pending",
+    };
+    await sendTikTokEvents(dummy, "InitiateCheckout");
+    await persist();
+    return store.tiktokLast;
   });
 
 export const seedAdminDemo = createServerFn({ method: "POST" })

@@ -133,7 +133,11 @@ export function AdminApp() {
           ...prev,
           ...next.settings,
           pixels: next.settings.pixels,
-          utmfy: { ...next.settings.utmify, apiToken: next.settings.utmify.apiToken || prev.utmify.apiToken },
+          utmfy: {
+            ...defaultSettings.utmify,
+            ...next.settings.utmfy,
+            apiToken: next.settings.utmfy.apiToken || prev.utmify.apiToken,
+          },
         }));
       } catch {
         // mantém o snapshot local
@@ -342,7 +346,7 @@ export function AdminApp() {
             {tab === "utmify" && (
               <UtmifyPanel
                 settings={settings}
-                last={snap?.utmifyLast}
+                last={snap?.utmfyLast}
                 onChange={setSettings}
                 onSave={() => void saveSettings(token, settings, setSettings)}
                 onTest={async () => {
@@ -422,7 +426,7 @@ async function saveSettings(
           storeName: settings.storeName,
           webhookUrl: settings.webhookUrl,
           pixels: settings.pixels,
-          utmfy: settings.utmify,
+          utmfy: settings.utmfy,
         },
       },
     });
@@ -1004,13 +1008,13 @@ function UtmifyPanel({
   onTest,
 }: {
   settings: AdminSettings;
-  last?: AdminSnapshot["utmifyLast"];
+  last?: AdminSnapshot["utmfyLast"];
   onChange: (settings: AdminSettings) => void;
   onSave: () => void;
   onTest: () => void;
 }) {
-  const u = settings.utmify;
-  const set = (partial: Partial<AdminSettings["utmify"]>) =>
+  const u = settings.utmfy ?? defaultSettings.utmify;
+  const set = (partial: Partial<AdminSettings["utmfy"]>) =>
     onChange({ ...settings, utmfy: { ...u, ...partial } });
   return (
     <div className="max-w-xl space-y-5">
@@ -1025,13 +1029,13 @@ function UtmifyPanel({
         </p>
       </div>
       <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={u.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
+        <input type="checkbox" checked={Boolean(u.enabled)} onChange={(e) => set({ enabled: e.target.checked })} />
         Ativar UTMify
       </label>
-      <Field label="Pixel ID" value={u.pixelId} onChange={(pixelId) => set({ pixelId })} placeholder="ID do pixel" />
+      <Field label="Pixel ID" value={u.pixelId ?? ""} onChange={(pixelId) => set({ pixelId })} placeholder="ID do pixel" />
       <Field
         label="API token (x-api-token)"
-        value={u.apiToken}
+        value={u.apiToken ?? ""}
         onChange={(apiToken) => set({ apiToken })}
         placeholder="Cole o token de Integrações → API Credentials"
         type="password"

@@ -2,6 +2,8 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { CheckoutShell } from "@/components/CheckoutShell";
 import {
+  customerFirstName,
+  customerName,
   getShippingMethod,
   loadOrder,
   persistOrder,
@@ -106,11 +108,9 @@ function OrderPage() {
       </h1>
       <p className="mt-2 max-w-xl text-[15px] text-[#444]">
         {pixPaid &&
-          `Pagamento confirmado. Obrigado, ${order.data.firstName}. Enviamos os detalhes para ${order.data.email}.`}
+          `Pagamento confirmado. Obrigado, ${customerFirstName(order.data)}. Enviamos os detalhes para ${order.data.email}.`}
         {pixPending &&
           "Escaneie o QR Code ou copie o código no app do seu banco. A página atualiza sozinha quando o pagamento cair."}
-        {order.data.payment !== "pix" &&
-          `Obrigado, ${order.data.firstName}. Enviamos os detalhes para ${order.data.email}.`}
       </p>
 
       {order.pix?.qrcode && pixPending && (
@@ -143,7 +143,7 @@ function OrderPage() {
           <section className="border border-[#e4e5f3] p-5">
             <h2 className="text-[15px] font-semibold">Entrega</h2>
             <p className="mt-2 text-[14px] leading-relaxed text-[#444]">
-              {order.data.firstName} {order.data.lastName}
+              {customerName(order.data)}
               <br />
               {order.data.street}, {order.data.number}
               {order.data.complement ? ` — ${order.data.complement}` : ""}

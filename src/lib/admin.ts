@@ -1,4 +1,4 @@
-import type { OrderSummary } from "@/lib/checkout";
+import { customerName, type OrderSummary } from "@/lib/checkout";
 import { formatBRL, getProduct } from "@/lib/products";
 import type { AnalyticsEvent, Attribution, DeviceType, FunnelEventName } from "@/lib/tracking";
 
@@ -434,7 +434,7 @@ export function buildLiveSessions(
     );
     const value = order?.total ?? (eventValue || undefined);
     const identity = order
-      ? `${order.data.firstName} ${order.data.lastName}`.trim()
+      ? customerName(order.data)
       : String([...trail].reverse().find((event) => event.props?.email)?.props?.email ?? "") || undefined;
 
     sessions.push({

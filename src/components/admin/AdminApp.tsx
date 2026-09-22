@@ -51,7 +51,7 @@ import {
   type Period,
 } from "@/lib/admin";
 import { loadLocalEvents } from "@/lib/tracking";
-import { loadOrders, type OrderSummary } from "@/lib/checkout";
+import { customerName, loadOrders, type OrderSummary } from "@/lib/checkout";
 import { formatBRL, products } from "@/lib/products";
 import { cn } from "@/lib/utils";
 import {
@@ -550,7 +550,7 @@ function OrdersPanel({
   const [status, setStatus] = useState("todos");
   const [open, setOpen] = useState<OrderSummary | null>(null);
   const filtered = orders.filter((order) => {
-    const hay = `${order.id} ${order.data.email} ${order.data.firstName} ${order.data.lastName}`.toLowerCase();
+    const hay = `${order.id} ${order.data.email} ${customerName(order.data)}`.toLowerCase();
     const matchQ = hay.includes(query.toLowerCase());
     const matchS = status === "todos" || orderStatus(order) === status;
     return matchQ && matchS;
@@ -613,7 +613,7 @@ function OrdersPanel({
                   <p className="text-[11px] text-white/40">{new Date(order.createdAt).toLocaleString("pt-BR")}</p>
                 </td>
                 <td className="px-4 py-3">
-                  {order.data.firstName} {order.data.lastName}
+                  {customerName(order.data)}
                   <p className="text-[11px] text-white/40">{order.data.email}</p>
                 </td>
                 <td className="px-4 py-3 text-xs text-white/60">{sourceLabel(order.attribution)}</td>
@@ -662,7 +662,7 @@ function OrderDrawer({
         <h3 className="text-xl font-semibold">{order.id}</h3>
         <StatusPill status={orderStatus(order)} />
         <dl className="mt-5 space-y-2 text-sm">
-          <Row label="Cliente" value={`${order.data.firstName} ${order.data.lastName}`} />
+          <Row label="Cliente" value={customerName(order.data)} />
           <Row label="E-mail" value={order.data.email} />
           <Row label="Telefone" value={order.data.phone} />
           <Row label="CPF" value={order.data.cpf} />
@@ -1144,7 +1144,7 @@ function RecentOrders({ orders }: { orders: OrderSummary[] }) {
               <div>
                 <p className="font-medium">{order.id}</p>
                 <p className="text-xs text-white/40">
-                  {order.data.firstName} · {sourceLabel(order.attribution)}
+                  {customerName(order.data)} · {sourceLabel(order.attribution)}
                 </p>
               </div>
               <div className="text-right">

@@ -323,15 +323,27 @@ export function StoreFooter() {
   );
 }
 
-export function PaymentMarks({ className }: { className?: string }) {
+export function PaymentMarks({
+  className,
+  pixOnly,
+}: {
+  className?: string;
+  pixOnly?: boolean;
+}) {
   return (
     <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1", className)}>
       <span className="text-[11px] text-muted-foreground">Formas de pagamento:</span>
-      <span className="text-[11px] font-semibold tracking-wide">VISA</span>
-      <span className="text-[11px] font-semibold">Mastercard</span>
-      <span className="text-[11px] font-semibold">Amex</span>
-      <span className="text-[11px] font-semibold">Elo</span>
-      <span className="text-[11px] font-semibold">PIX</span>
+      {pixOnly ? (
+        <span className="text-[11px] font-semibold">PIX</span>
+      ) : (
+        <>
+          <span className="text-[11px] font-semibold tracking-wide">VISA</span>
+          <span className="text-[11px] font-semibold">Mastercard</span>
+          <span className="text-[11px] font-semibold">Amex</span>
+          <span className="text-[11px] font-semibold">Elo</span>
+          <span className="text-[11px] font-semibold">PIX</span>
+        </>
+      )}
     </div>
   );
 }

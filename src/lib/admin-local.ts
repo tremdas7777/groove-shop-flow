@@ -174,6 +174,7 @@ export function seedLocalDemo() {
         createdAt: new Date(now - (15 - i) * 60_000).toISOString(),
         data: {
           email: `cliente${i}@email.com`,
+          name: `${["Ana", "Bruno", "Carla"][i % 3]} Silva`,
           firstName: ["Ana", "Bruno", "Carla"][i % 3],
           lastName: "Silva",
           cpf: "12345678901",

@@ -2,7 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import { CheckoutShell } from "@/components/CheckoutShell";
-import { loadOrder } from "@/lib/checkout";
+import { customerFirstName, loadOrder } from "@/lib/checkout";
 import { runningKits, type RunningKit } from "@/lib/kits";
 import { formatBRL } from "@/lib/products";
 import { useCart } from "@/lib/cart";
@@ -83,7 +83,7 @@ function ThankYouPage() {
           Pedido {order.id} pago
         </p>
         <h1 className="mt-2 text-[26px] font-semibold text-[#222] sm:text-[32px]">
-          Obrigado, {order.data.firstName}
+          Obrigado, {customerFirstName(order.data)}
         </h1>
         <p className="mx-auto mt-2 max-w-xl text-[15px] text-[#444]">
           Pagamento confirmado. Enviamos os detalhes para {order.data.email}. Seu pedido segue para

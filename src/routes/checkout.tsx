@@ -14,8 +14,8 @@ import {
   persistOrder,
   saveCheckoutDraft,
   shippingMethods,
+  splitCustomerName,
   type CheckoutData,
-  type PaymentMethod,
 } from "@/lib/checkout";
 import { createMagicPayPix } from "@/lib/magicpay";
 import {
@@ -57,7 +57,6 @@ function CheckoutPage() {
   const [ready, setReady] = useState(false);
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState("");
-  const [cardNotice, setCardNotice] = useState(false);
 
   useEffect(() => {
     const draft = loadCheckoutDraft();
@@ -96,8 +95,9 @@ function CheckoutPage() {
   const validateId = () => {
     const next: Record<string, string> = {};
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) next.email = "Informe um e-mail válido";
-    if (data.firstName.trim().length < 2) next.firstName = "Informe o primeiro nome";
-    if (data.lastName.trim().length < 2) next.lastName = "Informe o último nome";
+    if (data.name.trim().split(/\s+/).filter(Boolean).length < 2) {
+      next.name = "Informe o nome completo";
+    }
     if (data.cpf.replace(/\D/g, "").length !== 11) next.cpf = "Informe um CPF válido";
     if (data.phone.replace(/\D/g, "").length < 10) next.phone = "Informe um telefone válido";
     setErrors(next);
@@ -117,11 +117,6 @@ function CheckoutPage() {
   };
 
   const validatePay = () => {
-    if (data.payment !== "pix") {
-      patch({ payment: "pix" });
-      setCardNotice(true);
-      return false;
-    }
     setErrors({});
     return true;
   };
@@ -158,10 +153,18 @@ function CheckoutPage() {
       price: parsePrice(product!.preco),
       photo: product!.fotos[0],
     }));
+    const nameParts = splitCustomerName(data.name);
+    const checkoutData: CheckoutData = {
+      ...data,
+      name: data.name.trim(),
+      firstName: nameParts.firstName,
+      lastName: nameParts.lastName,
+      payment: "pix",
+    };
     const order = {
       id: orderId,
       createdAt: new Date().toISOString(),
-      data,
+      data: checkoutData,
       items: orderItems,
       subtotal,
       shipping,
@@ -170,7 +173,7 @@ function CheckoutPage() {
       status: "pending" as const,
     };
 
-    if (data.payment === "pix") {
+    if (checkoutData.payment === "pix") {
       setPaying(true);
       const amountCents = Math.round(total * 100);
       const shippingCents = Math.round(shipping * 100);
@@ -198,19 +201,19 @@ function CheckoutPage() {
           amountCents,
           shippingCents,
           customer: {
-            name: `${data.firstName} ${data.lastName}`.trim(),
-            email: data.email,
-            phone: data.phone,
-            cpf: data.cpf,
+            name: checkoutData.name,
+            email: checkoutData.email,
+            phone: checkoutData.phone,
+            cpf: checkoutData.cpf,
           },
           address: {
-            street: data.street,
-            streetNumber: data.number,
-            neighborhood: data.neighborhood,
-            city: data.city,
-            state: data.state,
-            zipCode: data.cep,
-            complement: data.complement,
+            street: checkoutData.street,
+            streetNumber: checkoutData.number,
+            neighborhood: checkoutData.neighborhood,
+            city: checkoutData.city,
+            state: checkoutData.state,
+            zipCode: checkoutData.cep,
+            complement: checkoutData.complement,
           },
           items: pixItems,
         },
@@ -374,16 +377,14 @@ function CheckoutPage() {
                   type="email"
                 />
                 <Field
-                  label="Primeiro nome"
-                  value={data.firstName}
-                  error={errors.firstName}
-                  onChange={(v) => patch({ firstName: v })}
-                />
-                <Field
-                  label="Último nome"
-                  value={data.lastName}
-                  error={errors.lastName}
-                  onChange={(v) => patch({ lastName: v })}
+                  className="sm:col-span-2"
+                  label="Nome completo"
+                  value={data.name}
+                  error={errors.name}
+                  onChange={(v) => {
+                    const parts = splitCustomerName(v);
+                    patch({ name: v, firstName: parts.firstName, lastName: parts.lastName });
+                  }}
                 />
                 <Field
                   label="CPF"
@@ -555,42 +556,17 @@ function CheckoutPage() {
             <section>
               <h1 className="text-[22px] font-semibold text-[#222]">Pagamento</h1>
               <p className="mt-1 text-[14px] text-muted-foreground">
-                As ofertas desta loja são válidas somente no PIX.
+                Pagamento exclusivo via PIX.
               </p>
 
-              <div className="mt-6 space-y-3">
+              <div className="mt-6">
                 <PayOption
-                  active={data.payment === "pix"}
-                  onSelect={() => {
-                    setCardNotice(false);
-                    patch({ payment: "pix" });
-                  }}
+                  active
+                  onSelect={() => patch({ payment: "pix" })}
                   title="PIX"
                   subtitle={formatBRL(total)}
                 />
-                <PayOption
-                  active={false}
-                  onSelect={() => {
-                    setCardNotice(true);
-                    patch({ payment: "pix" });
-                  }}
-                  title="Cartão de crédito"
-                  subtitle="Ofertas válidas somente via PIX"
-                />
               </div>
-
-              {cardNotice && (
-                <div className="mt-6 border border-gold bg-[#fff8ea] p-4 text-[13px] text-[#333]">
-                  As ofertas são válidas somente via PIX. Seguimos com o
-                  pagamento no PIX.
-                </div>
-              )}
-
-              {data.payment === "pix" && !cardNotice && (
-                <div className="mt-6 border border-gold bg-[#fff8ea] p-4 text-[13px] text-[#333]">
-                  Ao finalizar, a MagicPay gera o QR Code PIX para pagamento.
-                </div>
-              )}
 
               {payError && (
                 <p className="mt-4 text-[13px] text-destructive">{payError}</p>

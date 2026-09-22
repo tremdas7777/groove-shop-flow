@@ -9,7 +9,12 @@ import {
   type PresenceVisitor,
   type PublicTrackingSettings,
 } from "@/lib/admin";
-import type { OrderSummary } from "@/lib/checkout";
+import {
+  customerFirstName,
+  customerLastName,
+  customerName,
+  type OrderSummary,
+} from "@/lib/checkout";
 import type { AnalyticsEvent } from "@/lib/tracking";
 
 const MAX_EVENTS = 4000;
@@ -174,7 +179,7 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
     approvedDate: status === "paid" ? utcStamp() : null,
     refundedAt: status === "refunded" ? utcStamp() : null,
     customer: {
-      name: `${order.data.firstName} ${order.data.lastName}`.trim(),
+      name: customerName(order.data),
       email: order.data.email,
       phone: order.data.phone.replace(/\D/g, "") || null,
       document: order.data.cpf.replace(/\D/g, "") || null,
@@ -249,8 +254,12 @@ async function sendMetaCapi(order: OrderSummary, eventName: "Purchase" | "AddPay
         user_data: {
           em: [await hashUser(order.data.email)],
           ph: phone ? [await hashUser(phone)] : undefined,
-          fn: order.data.firstName ? [await hashUser(order.data.firstName)] : undefined,
-          ln: order.data.lastName ? [await hashUser(order.data.lastName)] : undefined,
+          fn: customerFirstName(order.data)
+            ? [await hashUser(customerFirstName(order.data))]
+            : undefined,
+          ln: customerLastName(order.data)
+            ? [await hashUser(customerLastName(order.data))]
+            : undefined,
           external_id: order.sessionId ? [await hashUser(order.sessionId)] : undefined,
           country: [await hashUser("br")],
         },
@@ -556,6 +565,7 @@ export const testUtmifyConnection = createServerFn({ method: "POST" })
       createdAt: new Date().toISOString(),
       data: {
         email: "teste@loja.local",
+        name: "Teste UTMify",
         firstName: "Teste",
         lastName: "UTMify",
         cpf: "00000000000",
@@ -611,6 +621,7 @@ export const testMetaConnection = createServerFn({ method: "POST" })
       createdAt: new Date().toISOString(),
       data: {
         email: "teste@loja.local",
+        name: "Teste Meta",
         firstName: "Teste",
         lastName: "Meta",
         cpf: "00000000000",
@@ -687,6 +698,7 @@ export const seedAdminDemo = createServerFn({ method: "POST" })
           createdAt: new Date(now - (20 - i) * 60_000).toISOString(),
           data: {
             email: `cliente${i}@email.com`,
+            name: `${["Ana", "Bruno", "Carla", "Diego"][i % 4]} Silva`,
             firstName: ["Ana", "Bruno", "Carla", "Diego"][i % 4],
             lastName: "Silva",
             cpf: "12345678901",

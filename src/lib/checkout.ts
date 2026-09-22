@@ -30,6 +30,7 @@ export function getShippingMethod(id?: string) {
 
 export interface CheckoutData {
   email: string;
+  name: string;
   firstName: string;
   lastName: string;
   cpf: string;
@@ -53,6 +54,7 @@ export interface CheckoutData {
 
 export const emptyCheckout: CheckoutData = {
   email: "",
+  name: "",
   firstName: "",
   lastName: "",
   cpf: "",
@@ -102,10 +104,53 @@ const CHECKOUT_KEY = "asics-checkout-draft";
 const ORDER_KEY = "asics-last-order";
 const ORDERS_KEY = "asics-orders-ledger";
 
+export function splitCustomerName(full: string) {
+  const parts = full.trim().split(/\s+/).filter(Boolean);
+  return { firstName: parts[0] ?? "", lastName: parts.slice(1).join(" ") };
+}
+
+export function customerName(data: {
+  name?: string;
+  firstName?: string;
+  lastName?: string;
+}) {
+  return (data.name || `${data.firstName ?? ""} ${data.lastName ?? ""}`)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function customerFirstName(data: {
+  name?: string;
+  firstName?: string;
+  lastName?: string;
+}) {
+  return splitCustomerName(customerName(data)).firstName;
+}
+
+export function customerLastName(data: {
+  name?: string;
+  firstName?: string;
+  lastName?: string;
+}) {
+  return splitCustomerName(customerName(data)).lastName;
+}
+
 export function loadCheckoutDraft(): CheckoutData {
   try {
     const raw = window.localStorage.getItem(CHECKOUT_KEY);
-    if (raw) return { ...emptyCheckout, ...(JSON.parse(raw) as CheckoutData) };
+    if (raw) {
+      const parsed = JSON.parse(raw) as CheckoutData;
+      const name = customerName(parsed);
+      const parts = splitCustomerName(name);
+      return {
+        ...emptyCheckout,
+        ...parsed,
+        name,
+        firstName: parts.firstName,
+        lastName: parts.lastName,
+        payment: "pix",
+      };
+    }
   } catch {
     // ignore
   }

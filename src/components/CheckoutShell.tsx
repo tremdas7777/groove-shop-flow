@@ -23,7 +23,7 @@ export function CheckoutShell({ children }: { children: ReactNode }) {
       </main>
       <footer className="mt-8 border-t border-[#e4e5f3] sm:mt-10">
         <div className="mx-auto max-w-[1100px] px-4 py-6 sm:py-8">
-          <PaymentMarks className="flex-wrap" />
+          <PaymentMarks className="flex-wrap" pixOnly />
           <p className="mt-4 max-w-3xl text-[11px] leading-relaxed text-[#666]">
             Copyright © {new Date().getFullYear()} ASICS America Corporation.
             TODOS OS DIREITOS RESERVADOS. As fotos aqui veiculadas, logotipo e

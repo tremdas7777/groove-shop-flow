@@ -78,7 +78,7 @@ async function persist() {
         pinHash: store.pinHash,
         events: store.events.slice(-MAX_EVENTS),
         orders: store.orders.slice(0, 500),
-        utmfyLast: store.utmifyLast,
+        utmfyLast: store.utmfyLast,
         metaLast: store.metaLast,
       }),
     );
@@ -99,13 +99,13 @@ async function hydrate() {
         ...defaultSettings,
         ...data.settings,
         pixels: { ...emptyPixels, ...data.settings.pixels },
-        utmify: { ...emptyUtmfy, ...data.settings.utmify },
+        utmfy: { ...emptyUtmfy, ...data.settings.utmfy },
       };
     }
     if (typeof data.pinHash === "string") store.pinHash = data.pinHash;
     if (Array.isArray(data.events)) store.events = data.events;
     if (Array.isArray(data.orders)) store.orders = data.orders as OrderSummary[];
-    if (data.utmifyLast) store.utmifyLast = data.utmifyLast;
+    if (data.utmfyLast) store.utmfyLast = data.utmfyLast;
     if (data.metaLast) store.metaLast = data.metaLast;
   } catch {
     // primeira execução
@@ -122,8 +122,8 @@ function publicSettings(): PublicTrackingSettings {
   return {
     pixels,
     utmfy: {
-      enabled: store.settings.utmify.enabled,
-      pixelId: store.settings.utmify.pixelId,
+      enabled: store.settings.utmfy.enabled,
+      pixelId: store.settings.utmfy.pixelId,
     },
   };
 }
@@ -141,8 +141,8 @@ function maskSettings(): AdminSettings {
       metaAccessToken: maskSecret(store.settings.pixels.metaAccessToken),
     },
     utmfy: {
-      ...store.settings.utmify,
-      apiToken: maskSecret(store.settings.utmify.apiToken),
+      ...store.settings.utmfy,
+      apiToken: maskSecret(store.settings.utmfy.apiToken),
     },
   };
 }
@@ -167,8 +167,8 @@ function utcStamp(iso?: string) {
 }
 
 async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid" | "refused" | "refunded") {
-  const token = store.settings.utmify.apiToken;
-  if (!store.settings.utmify.enabled || !token) return;
+  const token = store.settings.utmfy.apiToken;
+  if (!store.settings.utmfy.enabled || !token) return;
   const attr = order.attribution ?? {};
   const payload = {
     orderId: order.id,
@@ -208,11 +208,11 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
       userCommissionInCents: Math.round(order.total * 100),
       currency: "BRL" as const,
     },
-    ...(store.settings.utmify.testMode ? { isTest: true } : {}),
+    ...(store.settings.utmfy.testMode ? { isTest: true } : {}),
   };
 
   try {
-    const res = await fetch("https://api.utmify.com.br/api-credentials/orders", {
+    const res = await fetch("https://api.utmfy.com.br/api-credentials/orders", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -221,13 +221,13 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
       body: JSON.stringify(payload),
     });
     const body = await res.text();
-    store.utmifyLast = {
+    store.utmfyLast = {
       at: new Date().toISOString(),
       ok: res.ok,
       message: res.ok ? `UTMify ${status} · ${order.id}` : body.slice(0, 240) || `HTTP ${res.status}`,
     };
   } catch (error) {
-    store.utmifyLast = {
+    store.utmfyLast = {
       at: new Date().toISOString(),
       ok: false,
       message: error instanceof Error ? error.message : "Falha ao enviar para a UTMify",
@@ -323,7 +323,7 @@ function snapshot(): AdminSnapshot {
     events: store.events.slice(-2000),
     orders: store.orders,
     visitors: [...store.presence.values()].sort((a, b) => b.lastTs.localeCompare(a.lastTs)),
-    utmfyLast: store.utmifyLast,
+    utmfyLast: store.utmfyLast,
     metaLast: store.metaLast,
   };
 }
@@ -490,9 +490,9 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
     await hydrate();
     requireSession(data.token);
     const keepToken =
-      !data.settings.utmify.apiToken || data.settings.utmify.apiToken.includes("•")
-        ? store.settings.utmify.apiToken
-        : data.settings.utmify.apiToken;
+      !data.settings.utmfy.apiToken || data.settings.utmfy.apiToken.includes("•")
+        ? store.settings.utmfy.apiToken
+        : data.settings.utmfy.apiToken;
     const keepMetaToken =
       !data.settings.pixels.metaAccessToken || data.settings.pixels.metaAccessToken.includes("•")
         ? store.settings.pixels.metaAccessToken
@@ -502,7 +502,7 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
       storeName: data.settings.storeName,
       webhookUrl: data.settings.webhookUrl,
       pixels: { ...emptyPixels, ...data.settings.pixels, metaAccessToken: keepMetaToken },
-      utmfy: { ...data.settings.utmify, apiToken: keepToken },
+      utmfy: { ...data.settings.utmfy, apiToken: keepToken },
       hasPin: Boolean(store.pinHash),
     };
     await persist();
@@ -559,7 +559,7 @@ export const testUtmifyConnection = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await hydrate();
     requireSession(data.token);
-    if (!store.settings.utmify.apiToken) throw new Error("Cole o token da UTMify antes de testar.");
+    if (!store.settings.utmfy.apiToken) throw new Error("Cole o token da UTMify antes de testar.");
     const dummy: OrderSummary = {
       id: `TEST${Date.now().toString().slice(-6)}`,
       createdAt: new Date().toISOString(),
@@ -601,12 +601,12 @@ export const testUtmifyConnection = createServerFn({ method: "POST" })
       total: 1,
       status: "pending",
     };
-    const previous = store.settings.utmify.testMode;
-    store.settings.utmify.testMode = true;
+    const previous = store.settings.utmfy.testMode;
+    store.settings.utmfy.testMode = true;
     await sendUtmfy(dummy, "waiting_payment");
-    store.settings.utmify.testMode = previous;
+    store.settings.utmfy.testMode = previous;
     await persist();
-    return store.utmifyLast;
+    return store.utmfyLast;
   });
 
 export const testMetaConnection = createServerFn({ method: "POST" })

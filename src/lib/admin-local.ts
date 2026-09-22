@@ -51,7 +51,7 @@ export function loadLocalSettings(): AdminSettings {
       ...defaultSettings,
       ...parsed,
       pixels: { ...defaultSettings.pixels, ...(parsed.pixels ?? {}) },
-      utmfy: { ...defaultSettings.utmify, ...(parsed.utmify ?? {}) },
+      utmfy: { ...defaultSettings.utmfy, ...(parsed.utmfy ?? {}) },
       hasPin: localHasPin(),
     };
   } catch {
@@ -68,7 +68,7 @@ export function loadPublicSettings(): PublicTrackingSettings | null {
   try {
     const settings = loadLocalSettings();
     const pixels = settings.pixels ?? defaultSettings.pixels;
-    const utmfy = settings.utmify ?? defaultSettings.utmify;
+    const utmfy = settings.utmfy ?? defaultSettings.utmfy;
     const pixelsOn =
       pixels.metaEnabled ||
       pixels.googleEnabled ||

@@ -75,13 +75,13 @@ function injectPixels(settings: PublicTrackingSettings) {
 
   if (utmfy.enabled) {
     if (utmfy.pixelId) window.pixelId = utmfy.pixelId;
-    ensureScript("https://cdn.utmify.com.br/scripts/utms/latest.js", {
+    ensureScript("https://cdn.utmfy.com.br/scripts/utms/latest.js", {
       "data-utmify-prevent-xcod-sck": "",
       "data-utmify-prevent-subids": "",
       defer: "",
     });
     if (utmfy.pixelId) {
-      ensureScript("https://cdn.utmify.com.br/scripts/pixel/pixel.js");
+      ensureScript("https://cdn.utmfy.com.br/scripts/pixel/pixel.js");
     }
   }
 

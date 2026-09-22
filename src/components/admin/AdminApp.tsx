@@ -134,9 +134,9 @@ export function AdminApp() {
           ...next.settings,
           pixels: next.settings.pixels,
           utmfy: {
-            ...defaultSettings.utmify,
+            ...defaultSettings.utmfy,
             ...next.settings.utmfy,
-            apiToken: next.settings.utmfy.apiToken || prev.utmify.apiToken,
+            apiToken: next.settings.utmfy.apiToken || prev.utmfy.apiToken,
           },
         }));
       } catch {
@@ -1013,7 +1013,7 @@ function UtmifyPanel({
   onSave: () => void;
   onTest: () => void;
 }) {
-  const u = settings.utmfy ?? defaultSettings.utmify;
+  const u = settings.utmfy ?? defaultSettings.utmfy;
   const set = (partial: Partial<AdminSettings["utmfy"]>) =>
     onChange({ ...settings, utmfy: { ...u, ...partial } });
   return (
@@ -1022,8 +1022,8 @@ function UtmifyPanel({
         <h2 className="text-xl font-semibold">UTMify</h2>
         <p className="text-sm text-white/50">
           Script de UTMs no site + envio server-side de PIX gerado e pago para{" "}
-          <a className="underline" href="https://app.utmify.com.br" target="_blank" rel="noreferrer">
-            app.utmify.com.br
+          <a className="underline" href="https://app.utmfy.com.br" target="_blank" rel="noreferrer">
+            app.utmfy.com.br
           </a>
           .
         </p>

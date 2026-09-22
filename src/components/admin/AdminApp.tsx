@@ -141,8 +141,12 @@ export function AdminApp() {
           settingsLoaded = true;
           setSettings((prev) => keepTypedSecrets(prev, next.settings));
         }
-      } catch {
-        // mantém o snapshot local
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message.toLowerCase().includes("sessão") || message.toLowerCase().includes("expirada")) {
+          sessionStorage.removeItem(TOKEN_KEY);
+          setToken(null);
+        }
       }
     };
     void pull();
@@ -159,13 +163,21 @@ export function AdminApp() {
     try {
       const ok = await localCheckPin(pin);
       if (!ok) throw new Error("Senha incorreta.");
-      const tokenValue = `local_${Date.now().toString(36)}`;
+      let tokenValue = "";
+      try {
+        const server = hasPin
+          ? await adminLogin({ data: { pin } }).catch(() => adminSetup({ data: { pin } }))
+          : await adminSetup({ data: { pin } }).catch(() => adminLogin({ data: { pin } }));
+        tokenValue = server?.token ?? "";
+      } catch {
+        tokenValue = "";
+      }
+      if (!tokenValue) tokenValue = `local_${Date.now().toString(36)}`;
       sessionStorage.setItem(TOKEN_KEY, tokenValue);
       setHasPin(true);
       setToken(tokenValue);
       setPin("");
       setSettings(loadLocalSettings());
-      void (hasPin ? adminLogin({ data: { pin } }) : adminSetup({ data: { pin } })).catch(() => undefined);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Não foi possível entrar.");
     } finally {

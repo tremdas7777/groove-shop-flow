@@ -6,6 +6,7 @@ import {
   mergePixelSecrets,
   metaCapiTargets,
   normalizePixels,
+  pixelsAreActive,
   publicPixels,
   maskPixelSettings,
   type AdminSettings,
@@ -23,6 +24,7 @@ import type { AnalyticsEvent } from "@/lib/tracking";
 
 const MAX_EVENTS = 4000;
 const PRESENCE_TTL_MS = 90_000;
+const STATE_CACHE_URL = "https://asics-admin.internal/state";
 
 interface Session {
   token: string;
@@ -41,7 +43,20 @@ interface Store {
   loaded: boolean;
 }
 
-const store: Store = {
+interface PersistedState {
+  settings?: AdminSettings;
+  pinHash?: string;
+  events?: AnalyticsEvent[];
+  orders?: OrderSummary[];
+  presence?: PresenceVisitor[];
+  sessions?: Session[];
+  utmfyLast?: Store["utmfyLast"];
+  metaLast?: Store["metaLast"];
+}
+
+const globalStore = globalThis as typeof globalThis & { __asicsAdminStore?: Store };
+
+const store: Store = globalStore.__asicsAdminStore ?? {
   settings: structuredClone(defaultSettings),
   pinHash: "",
   events: [],
@@ -50,6 +65,9 @@ const store: Store = {
   sessions: [],
   loaded: false,
 };
+globalStore.__asicsAdminStore = store;
+
+let persistChain: Promise<void> = Promise.resolve();
 
 function envPin() {
   return process.env.ADMIN_PIN ?? "";
@@ -69,35 +87,139 @@ function statePath() {
   return `${process.cwd()}/data/admin-state.json`;
 }
 
-async function persist() {
+function serializeState(): PersistedState {
+  prunePresence();
+  return {
+    settings: store.settings,
+    pinHash: store.pinHash,
+    events: store.events.slice(-MAX_EVENTS),
+    orders: store.orders.slice(0, 500),
+    presence: [...store.presence.values()],
+    sessions: store.sessions.filter((session) => session.expiresAt > Date.now()),
+    utmfyLast: store.utmfyLast,
+    metaLast: store.metaLast,
+  };
+}
+
+function mergePersisted(data: PersistedState) {
+  if (Array.isArray(data.events)) {
+    const byId = new Map(store.events.map((event) => [event.id, event]));
+    for (const event of data.events) {
+      if (event?.id && !byId.has(event.id)) store.events.push(event);
+    }
+    store.events = store.events
+      .slice()
+      .sort((a, b) => a.ts.localeCompare(b.ts))
+      .slice(-MAX_EVENTS);
+  }
+  if (Array.isArray(data.orders)) {
+    const byId = new Map(store.orders.map((order) => [order.id, order]));
+    for (const order of data.orders) {
+      if (!order?.id) continue;
+      const prev = byId.get(order.id);
+      if (!prev) {
+        store.orders.push(order);
+        byId.set(order.id, order);
+      } else if ((order.createdAt ?? "") > (prev.createdAt ?? "") || order.status === "paid") {
+        Object.assign(prev, order);
+      }
+    }
+    store.orders = store.orders
+      .slice()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 500);
+  }
+  if (Array.isArray(data.presence)) {
+    for (const visitor of data.presence) {
+      if (!visitor?.sessionId) continue;
+      const prev = store.presence.get(visitor.sessionId);
+      if (!prev || visitor.lastTs >= prev.lastTs) store.presence.set(visitor.sessionId, visitor);
+    }
+  }
+  if (Array.isArray(data.sessions)) {
+    const byToken = new Map(store.sessions.map((session) => [session.token, session]));
+    for (const session of data.sessions) {
+      if (session?.token && session.expiresAt > Date.now() && !byToken.has(session.token)) {
+        store.sessions.push(session);
+      }
+    }
+  }
+  if (!store.pinHash && data.pinHash) store.pinHash = data.pinHash;
+  if (data.settings && !pixelsAreActive(store.settings.pixels) && pixelsAreActive(normalizePixels(data.settings.pixels))) {
+    store.settings = {
+      ...defaultSettings,
+      ...data.settings,
+      pixels: normalizePixels(data.settings.pixels),
+      utmfy: { ...emptyUtmfy, ...data.settings.utmfy },
+    };
+  }
+  if (data.utmfyLast && (!store.utmfyLast || data.utmfyLast.at > store.utmfyLast.at)) {
+    store.utmfyLast = data.utmfyLast;
+  }
+  if (data.metaLast && (!store.metaLast || data.metaLast.at > store.metaLast.at)) {
+    store.metaLast = data.metaLast;
+  }
+}
+
+async function readPersisted(): Promise<PersistedState | null> {
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(statePath(), "utf8");
+    return JSON.parse(raw) as PersistedState;
+  } catch {
+    // sem arquivo
+  }
+  try {
+    const cache = await caches.open("asics-admin");
+    const res = await cache.match(STATE_CACHE_URL);
+    if (res) return (await res.json()) as PersistedState;
+  } catch {
+    // sem Cache API
+  }
+  return null;
+}
+
+async function writePersisted(data: PersistedState) {
+  const body = JSON.stringify(data);
   try {
     const { mkdir, writeFile } = await import("node:fs/promises");
     const { dirname } = await import("node:path");
     const path = statePath();
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(
-      path,
-      JSON.stringify({
-        settings: store.settings,
-        pinHash: store.pinHash,
-        events: store.events.slice(-MAX_EVENTS),
-        orders: store.orders.slice(0, 500),
-        utmfyLast: store.utmfyLast,
-        metaLast: store.metaLast,
-      }),
-    );
+    await writeFile(path, body);
   } catch {
     // ambiente sem disco gravável
   }
+  try {
+    const cache = await caches.open("asics-admin");
+    await cache.put(
+      STATE_CACHE_URL,
+      new Response(body, {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "max-age=604800",
+        },
+      }),
+    );
+  } catch {
+    // Cache API indisponível
+  }
+}
+
+async function persist() {
+  persistChain = persistChain.then(async () => {
+    const disk = await readPersisted();
+    if (disk) mergePersisted(disk);
+    await writePersisted(serializeState());
+  });
+  await persistChain;
 }
 
 async function hydrate() {
   if (store.loaded) return;
   store.loaded = true;
-  try {
-    const { readFile } = await import("node:fs/promises");
-    const raw = await readFile(statePath(), "utf8");
-    const data = JSON.parse(raw) as Partial<Store>;
+  const data = await readPersisted();
+  if (data) {
     if (data.settings) {
       store.settings = {
         ...defaultSettings,
@@ -106,13 +228,7 @@ async function hydrate() {
         utmfy: { ...emptyUtmfy, ...data.settings.utmfy },
       };
     }
-    if (typeof data.pinHash === "string") store.pinHash = data.pinHash;
-    if (Array.isArray(data.events)) store.events = data.events;
-    if (Array.isArray(data.orders)) store.orders = data.orders as OrderSummary[];
-    if (data.utmfyLast) store.utmfyLast = data.utmfyLast;
-    if (data.metaLast) store.metaLast = data.metaLast;
-  } catch {
-    // primeira execução
+    mergePersisted(data);
   }
   if (!store.pinHash && envPin()) {
     store.pinHash = await sha256(envPin());
@@ -346,17 +462,17 @@ const eventSchema = z.object({
   sessionId: z.string(),
   path: z.string(),
   title: z.string().optional(),
-  device: z.enum(["mobile", "tablet", "desktop"]),
-  attribution: z.record(z.string().optional()).optional(),
-  props: z.record(z.unknown()).optional(),
+  device: z.string().catch("mobile"),
+  attribution: z.record(z.any()).optional(),
+  props: z.record(z.any()).optional(),
 });
 
 const presenceSchema = z.object({
   sessionId: z.string(),
   path: z.string(),
   title: z.string().optional(),
-  device: z.enum(["mobile", "tablet", "desktop"]),
-  attribution: z.record(z.string().optional()).optional(),
+  device: z.string().catch("mobile"),
+  attribution: z.record(z.any()).optional(),
   lastEvent: z.string(),
 });
 
@@ -372,18 +488,20 @@ export const ingestStoreEvent = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await hydrate();
     if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
-    store.events = [...store.events.filter((event) => event.id !== data.id), data as AnalyticsEvent].slice(-MAX_EVENTS);
-    store.presence.set(data.sessionId, {
-      sessionId: data.sessionId,
-      path: data.path,
-      title: data.title,
-      device: data.device,
-      attribution: data.attribution ?? {},
-      lastEvent: data.name,
-      lastTs: data.ts,
-      startedAt: store.presence.get(data.sessionId)?.startedAt ?? data.ts,
+    const device = data.device === "desktop" || data.device === "tablet" ? data.device : "mobile";
+    const incoming = { ...data, device, attribution: data.attribution ?? {} } as AnalyticsEvent;
+    store.events = [...store.events.filter((event) => event.id !== incoming.id), incoming].slice(-MAX_EVENTS);
+    store.presence.set(incoming.sessionId, {
+      sessionId: incoming.sessionId,
+      path: incoming.path,
+      title: incoming.title,
+      device,
+      attribution: incoming.attribution ?? {},
+      lastEvent: incoming.name,
+      lastTs: incoming.ts,
+      startedAt: store.presence.get(incoming.sessionId)?.startedAt ?? incoming.ts,
     });
-    if (store.events.length % 20 === 0) void persist();
+    await persist();
     return { ok: true };
   });
 
@@ -397,16 +515,18 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
       data.lastEvent === "heartbeat" && prev?.lastEvent && prev.lastEvent !== "heartbeat"
         ? prev.lastEvent
         : data.lastEvent;
+    const device = data.device === "desktop" || data.device === "tablet" ? data.device : "mobile";
     store.presence.set(data.sessionId, {
       sessionId: data.sessionId,
       path: data.path,
       title: data.title,
-      device: data.device,
+      device,
       attribution: data.attribution ?? {},
       lastEvent,
       lastTs: new Date().toISOString(),
       startedAt: prev?.startedAt ?? new Date().toISOString(),
     });
+    await persist();
     return { ok: true };
   });
 
@@ -469,6 +589,7 @@ export const adminLogin = createServerFn({ method: "POST" })
     if (hash !== store.pinHash) throw new Error("Senha incorreta.");
     const token = await randomToken();
     store.sessions.push({ token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 });
+    await persist();
     return { token };
   });
 

@@ -165,7 +165,14 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     captureAttribution();
     setEventIngest((event) => {
-      void ingestStoreEvent({ data: event }).catch(() => undefined);
+      const send = async (attempt = 0) => {
+        try {
+          await ingestStoreEvent({ data: event });
+        } catch {
+          if (attempt < 4) window.setTimeout(() => void send(attempt + 1), 500 * (attempt + 1));
+        }
+      };
+      void send();
     });
     const local = loadPublicSettings();
     if (local && !isAdminPath(window.location.pathname)) {
@@ -208,16 +215,23 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         startedAt: new Date().toISOString(),
       };
       touchLocalPresence(payload);
-      void heartbeatVisitor({
-        data: {
-          sessionId: payload.sessionId,
-          path: payload.path,
-          title: payload.title,
-          device: payload.device,
-          attribution: payload.attribution,
-          lastEvent: payload.lastEvent,
-        },
-      }).catch(() => undefined);
+      const sendBeat = async (attempt = 0) => {
+        try {
+          await heartbeatVisitor({
+            data: {
+              sessionId: payload.sessionId,
+              path: payload.path,
+              title: payload.title,
+              device: payload.device,
+              attribution: payload.attribution,
+              lastEvent: payload.lastEvent,
+            },
+          });
+        } catch {
+          if (attempt < 3) window.setTimeout(() => void sendBeat(attempt + 1), 800 * (attempt + 1));
+        }
+      };
+      void sendBeat();
     };
     beat();
     const id = window.setInterval(beat, 8000);

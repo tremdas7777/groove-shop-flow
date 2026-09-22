@@ -149,7 +149,7 @@ function CheckoutPage() {
   const finish = async () => {
     if (!validatePay()) return;
     setPayError("");
-    const orderId = `AS${Date.now().toString().slice(-8)}`;
+    const orderId = `PD${Date.now().toString().slice(-8)}`;
     const orderItems = detailed.map(({ item, product }) => ({
       id: item.id,
       size: item.size,

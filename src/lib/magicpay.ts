@@ -66,6 +66,15 @@ function normalizeStatus(status: unknown): PixStatus {
   return value ? "unknown" : "pending";
 }
 
+function gatewayTitle(title: string) {
+  const cleaned = title
+    .replace(/\bASICS\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s*[-–—|]\s*$/g, "")
+    .trim();
+  return (cleaned || "Pedido").slice(0, 120);
+}
+
 function parsePix(payload: Record<string, unknown>): MagicPayPix {
   const pix = (payload.pix ?? {}) as Record<string, unknown>;
   const qrcode = String(
@@ -116,7 +125,7 @@ export const createMagicPayPix = createServerFn({ method: "POST" })
         paymentMethod: "pix",
         pix: { expiresInDays: 1 },
         items: data.items.map((item) => ({
-          title: item.title.slice(0, 120),
+          title: gatewayTitle(item.title),
           unitPrice: item.unitPrice,
           quantity: item.quantity,
           tangible: true,

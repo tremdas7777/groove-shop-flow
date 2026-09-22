@@ -474,28 +474,44 @@ function keepTypedSecrets(prev: AdminSettings, incoming: AdminSettings): AdminSe
   };
 }
 
+function isDemoSession(sessionId?: string) {
+  return Boolean(sessionId?.startsWith("demo_"));
+}
+
+function isDemoOrder(id?: string) {
+  return Boolean(id && /^ASDEMO/i.test(id));
+}
+
+function isDemoEvent(event: { id?: string; sessionId?: string; props?: Record<string, unknown> }) {
+  return (
+    event.id?.startsWith("demo_") ||
+    isDemoSession(event.sessionId) ||
+    (typeof event.props?.order_id === "string" && isDemoOrder(event.props.order_id))
+  );
+}
+
 function mergeLocal(snap: AdminSnapshot): AdminSnapshot {
-  const localEvents = loadLocalEvents();
-  const localOrders = loadOrders();
-  const localVisitors = loadLocalPresence(true);
-  const events = [...snap.events];
+  const localEvents = loadLocalEvents().filter((event) => !isDemoEvent(event));
+  const localOrders = loadOrders().filter((order) => !isDemoOrder(order.id));
+  const localVisitors = loadLocalPresence(true).filter((visitor) => !isDemoSession(visitor.sessionId));
+  const events = snap.events.filter((event) => !isDemoEvent(event));
   for (const event of localEvents) {
     if (!events.some((item) => item.id === event.id)) events.push(event);
   }
-  const visitors = [...snap.visitors];
+  const visitors = snap.visitors.filter((visitor) => !isDemoSession(visitor.sessionId));
   for (const visitor of localVisitors) {
     const index = visitors.findIndex((item) => item.sessionId === visitor.sessionId);
     if (index === -1) visitors.push(visitor);
     else if (visitors[index] && visitor.lastTs > visitors[index].lastTs) visitors[index] = visitor;
   }
-  const orders = [...snap.orders];
+  const orders = snap.orders.filter((order) => !isDemoOrder(order.id));
   for (const order of localOrders) {
     if (!orders.some((item) => item.id === order.id)) orders.push(order);
   }
   for (const event of events) {
     if (event.name !== "generate_pix" && event.name !== "purchase") continue;
     const id = typeof event.props?.order_id === "string" ? event.props.order_id : "";
-    if (!id || orders.some((item) => item.id === id)) continue;
+    if (!id || isDemoOrder(id) || orders.some((item) => item.id === id)) continue;
     const visitor = visitors.find((item) => item.sessionId === event.sessionId);
     const rawItems = Array.isArray(event.props?.cart_items) ? event.props.cart_items : visitor?.cartItems ?? [];
     const items = (rawItems as { id?: number; title?: string; size?: string; qty?: number; price?: number; photo?: string }[]).map((item) => ({

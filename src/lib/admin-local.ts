@@ -7,6 +7,7 @@ import {
   type PresenceVisitor,
   type PublicTrackingSettings,
 } from "@/lib/admin";
+import { UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 import { loadOrders, type OrderSummary } from "@/lib/checkout";
 import { loadLocalEvents, type AnalyticsEvent } from "@/lib/tracking";
 
@@ -53,7 +54,14 @@ export function loadLocalSettings(): AdminSettings {
       ...defaultSettings,
       ...parsed,
       pixels: normalizePixels(parsed.pixels),
-      utmfy: { ...defaultSettings.utmfy, ...(parsed.utmfy ?? {}) },
+      utmfy: {
+        ...defaultSettings.utmfy,
+        ...(parsed.utmfy ?? {}),
+        pixelId: parsed.utmfy?.pixelId || UTMIFY_PIXEL_ID,
+        enabled:
+          Boolean(parsed.utmfy?.enabled) ||
+          Boolean(parsed.utmfy?.apiToken && !parsed.utmfy.apiToken.includes("•")),
+      },
       hasPin: localHasPin(),
     };
   } catch {

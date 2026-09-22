@@ -14,6 +14,7 @@ import {
   type PresenceVisitor,
   type PublicTrackingSettings,
 } from "@/lib/admin";
+import { UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 import {
   customerFirstName,
   customerLastName,
@@ -101,6 +102,22 @@ function serializeState(): PersistedState {
   };
 }
 
+function hasSecret(value?: string) {
+  return Boolean(value?.trim() && !value.includes("•"));
+}
+
+function mergeUtmfy(disk?: AdminSettings["utmfy"]) {
+  const current = store.settings.utmfy ?? emptyUtmfy;
+  const incoming = { ...emptyUtmfy, ...disk };
+  const apiToken = hasSecret(current.apiToken) ? current.apiToken : incoming.apiToken;
+  store.settings.utmfy = {
+    enabled: current.enabled || incoming.enabled || hasSecret(apiToken),
+    pixelId: current.pixelId || incoming.pixelId || UTMIFY_PIXEL_ID,
+    apiToken,
+    testMode: current.testMode || incoming.testMode,
+  };
+}
+
 function mergePersisted(data: PersistedState) {
   if (Array.isArray(data.events)) {
     const byId = new Map(store.events.map((event) => [event.id, event]));
@@ -145,13 +162,16 @@ function mergePersisted(data: PersistedState) {
     }
   }
   if (!store.pinHash && data.pinHash) store.pinHash = data.pinHash;
-  if (data.settings && !pixelsAreActive(store.settings.pixels) && pixelsAreActive(normalizePixels(data.settings.pixels))) {
-    store.settings = {
-      ...defaultSettings,
-      ...data.settings,
-      pixels: normalizePixels(data.settings.pixels),
-      utmfy: { ...emptyUtmfy, ...data.settings.utmfy },
-    };
+  if (data.settings) {
+    if (!pixelsAreActive(store.settings.pixels) && pixelsAreActive(normalizePixels(data.settings.pixels))) {
+      store.settings = {
+        ...defaultSettings,
+        ...data.settings,
+        pixels: normalizePixels(data.settings.pixels),
+        utmfy: store.settings.utmfy,
+      };
+    }
+    mergeUtmfy(data.settings.utmfy);
   }
   if (data.utmfyLast && (!store.utmfyLast || data.utmfyLast.at > store.utmfyLast.at)) {
     store.utmfyLast = data.utmfyLast;
@@ -235,6 +255,7 @@ async function hydrate() {
     store.settings.hasPin = true;
   }
   store.settings.hasPin = Boolean(store.pinHash);
+  mergeUtmfy(store.settings.utmfy);
 }
 
 function publicSettings(): PublicTrackingSettings {
@@ -284,7 +305,7 @@ function utcStamp(iso?: string) {
 
 async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid" | "refused" | "refunded") {
   const token = store.settings.utmfy.apiToken;
-  if (!store.settings.utmfy.enabled || !token) return;
+  if (!hasSecret(token)) return;
   const attr = order.attribution ?? {};
   const payload = {
     orderId: order.id,
@@ -317,6 +338,9 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
       utm_medium: attr.utm_medium ?? null,
       utm_content: attr.utm_content ?? null,
       utm_term: attr.utm_term ?? null,
+      fbclid: attr.fbclid ?? null,
+      gclid: attr.gclid ?? null,
+      ttclid: attr.ttclid ?? null,
     },
     commission: {
       totalPriceInCents: Math.round(order.total * 100),
@@ -727,7 +751,12 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
       storeName: data.settings.storeName,
       webhookUrl: data.settings.webhookUrl,
       pixels: mergePixelSecrets(data.settings.pixels, store.settings.pixels),
-      utmfy: { ...data.settings.utmfy, apiToken: keepToken },
+      utmfy: {
+        ...data.settings.utmfy,
+        apiToken: keepToken,
+        pixelId: data.settings.utmfy.pixelId || UTMIFY_PIXEL_ID,
+        enabled: data.settings.utmfy.enabled || hasSecret(keepToken),
+      },
       hasPin: Boolean(store.pinHash),
     };
     await persist();
@@ -784,7 +813,7 @@ export const testUtmifyConnection = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await hydrate();
     requireSession(data.token);
-    if (!store.settings.utmfy.apiToken) throw new Error("Cole o token da UTMify antes de testar.");
+    if (!hasSecret(store.settings.utmfy.apiToken)) throw new Error("Token da UTMify não encontrado no servidor.");
     const dummy: OrderSummary = {
       id: `TEST${Date.now().toString().slice(-6)}`,
       createdAt: new Date().toISOString(),

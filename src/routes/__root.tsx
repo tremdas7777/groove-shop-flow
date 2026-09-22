@@ -14,6 +14,7 @@ import { reportLovableError } from "../lib/lovable-error-reporting";
 import { CartProvider } from "../lib/cart";
 import { TrackingProvider } from "../components/TrackingProvider";
 import { Toaster } from "../components/ui/sonner";
+import { utmifyHeadScript } from "../lib/utmify-pixel";
 
 function NotFoundComponent() {
   return (
@@ -127,6 +128,7 @@ function RootShell({ children }: { children: ReactNode }) {
     <html lang="pt-BR">
       <head>
         <HeadContent />
+        <script dangerouslySetInnerHTML={{ __html: utmifyHeadScript }} />
       </head>
       <body>
         {children}

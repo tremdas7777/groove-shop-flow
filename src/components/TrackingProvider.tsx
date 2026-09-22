@@ -15,6 +15,7 @@ import {
   setEventIngest,
   track,
 } from "@/lib/tracking";
+import { injectUtmifyPixel, UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 
 function isAdminPath(path: string) {
   return path.toLowerCase().startsWith("/admin");
@@ -144,17 +145,7 @@ function injectPixels(settings: PublicTrackingSettings) {
     }
   }
 
-  if (settings.utmfy.enabled) {
-    if (settings.utmfy.pixelId) window.pixelId = settings.utmfy.pixelId;
-    ensureScript("https://cdn.utmify.com.br/scripts/utms/latest.js", {
-      "data-utmify-prevent-xcod-sck": "",
-      "data-utmify-prevent-subids": "",
-      defer: "",
-    });
-    if (settings.utmfy.pixelId) {
-      ensureScript("https://cdn.utmify.com.br/scripts/pixel/pixel.js");
-    }
-  }
+  injectUtmifyPixel(settings.utmfy.pixelId || UTMIFY_PIXEL_ID);
 }
 
 export function TrackingProvider({ children }: { children: ReactNode }) {
@@ -166,6 +157,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     captureAttribution();
+    injectUtmifyPixel();
     setEventIngest((event) => {
       const send = async (attempt = 0) => {
         try {

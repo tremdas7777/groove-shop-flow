@@ -75,6 +75,7 @@ import {
   saveLocalSettings,
   seedLocalDemo,
 } from "@/lib/admin-local";
+import { UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 import { LiveView } from "@/components/admin/LiveView";
 import { AbandonedCarts } from "@/components/admin/AbandonedCarts";
 
@@ -1144,7 +1145,8 @@ function UtmifyPanel({
       <div>
         <h2 className="text-xl font-semibold">UTMify</h2>
         <p className="text-sm text-white/50">
-          Script de UTMs no site + envio server-side de PIX gerado e pago para{" "}
+          O pixel já está em todas as páginas. O token salvo no admin é o que a UTMify usa para
+          rastrear visitas, PIX gerado e pagamento em{" "}
           <a className="underline" href="https://app.utmify.com.br" target="_blank" rel="noreferrer">
             app.utmify.com.br
           </a>
@@ -1155,7 +1157,12 @@ function UtmifyPanel({
         <input type="checkbox" checked={Boolean(u.enabled)} onChange={(e) => set({ enabled: e.target.checked })} />
         Ativar UTMify
       </label>
-      <Field label="Pixel ID" value={u.pixelId ?? ""} onChange={(pixelId) => set({ pixelId })} placeholder="ID do pixel" />
+      <Field
+        label="Pixel ID"
+        value={u.pixelId ?? ""}
+        onChange={(pixelId) => set({ pixelId })}
+        placeholder={UTMIFY_PIXEL_ID}
+      />
       <Field
         label="API token (x-api-token)"
         value={u.apiToken ?? ""}

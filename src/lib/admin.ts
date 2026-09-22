@@ -1,6 +1,7 @@
 import { customerName, type OrderSummary } from "@/lib/checkout";
 import { formatBRL, getProduct, parsePrice } from "@/lib/products";
 import type { AnalyticsEvent, Attribution, DeviceType, FunnelEventName } from "@/lib/tracking";
+import { UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 
 export type PixelKind = "meta" | "google" | "tiktok" | "kwai" | "snap" | "pinterest" | "custom";
 
@@ -287,8 +288,8 @@ export function metaCapiTargets(pixels: PixelSettings) {
 }
 
 export const emptyUtmfy: UtmfySettings = {
-  enabled: false,
-  pixelId: "",
+  enabled: true,
+  pixelId: UTMIFY_PIXEL_ID,
   apiToken: "",
   testMode: false,
 };

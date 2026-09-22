@@ -233,6 +233,6 @@ export function seedLocalDemo() {
         startedAt: events.find((event) => event.sessionId === last.sessionId)?.ts ?? last.ts,
       } satisfies PresenceVisitor;
     })
-    .filter((item): item is PresenceVisitor => Boolean(item));
+    .filter(Boolean) as PresenceVisitor[];
   window.localStorage.setItem(PRESENCE_KEY, JSON.stringify(live));
 }

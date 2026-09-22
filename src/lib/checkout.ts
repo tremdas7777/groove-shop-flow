@@ -213,7 +213,7 @@ export function updateOrderPix(pix: OrderPix) {
   const next: OrderSummary = {
     ...order,
     pix: { ...order.pix, ...pix },
-    status: paid ? "paid" : order.status ?? pix.status,
+    status: paid ? "paid" : order.status ?? (pix.status === "unknown" ? "pending" : pix.status),
   };
   persistOrder(next);
   return next;

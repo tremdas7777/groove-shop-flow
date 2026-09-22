@@ -29,6 +29,7 @@ export interface Attribution {
   ttclid?: string;
   landing?: string;
   referrer?: string;
+  [key: string]: string | undefined;
 }
 
 export interface AnalyticsEvent {
@@ -40,7 +41,7 @@ export interface AnalyticsEvent {
   title?: string;
   device: DeviceType;
   attribution: Attribution;
-  props?: Record<string, unknown>;
+  props?: Record<string, any>;
 }
 
 const SESSION_KEY = "asics-session-id";

@@ -99,7 +99,7 @@ async function hydrate() {
         ...defaultSettings,
         ...data.settings,
         pixels: { ...emptyPixels, ...data.settings.pixels },
-        utmfy: { ...emptyUtmfy, ...data.settings.utmify },
+        utmify: { ...emptyUtmfy, ...data.settings.utmify },
       };
     }
     if (typeof data.pinHash === "string") store.pinHash = data.pinHash;

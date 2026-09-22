@@ -2,8 +2,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import {
   defaultSettings,
-  emptyPixels,
   emptyUtmfy,
+  mergePixelSecrets,
+  metaCapiTargets,
+  normalizePixels,
+  publicPixels,
+  maskPixelSettings,
   type AdminSettings,
   type AdminSnapshot,
   type PresenceVisitor,
@@ -98,7 +102,7 @@ async function hydrate() {
       store.settings = {
         ...defaultSettings,
         ...data.settings,
-        pixels: { ...emptyPixels, ...data.settings.pixels },
+        pixels: normalizePixels(data.settings.pixels),
         utmfy: { ...emptyUtmfy, ...data.settings.utmfy },
       };
     }
@@ -118,9 +122,8 @@ async function hydrate() {
 }
 
 function publicSettings(): PublicTrackingSettings {
-  const { metaAccessToken: _token, ...pixels } = store.settings.pixels;
   return {
-    pixels,
+    pixels: publicPixels(store.settings.pixels),
     utmfy: {
       enabled: store.settings.utmfy.enabled,
       pixelId: store.settings.utmfy.pixelId,
@@ -136,10 +139,7 @@ function maskSettings(): AdminSettings {
   return {
     ...store.settings,
     hasPin: Boolean(store.pinHash),
-    pixels: {
-      ...store.settings.pixels,
-      metaAccessToken: maskSecret(store.settings.pixels.metaAccessToken),
-    },
+    pixels: maskPixelSettings(store.settings.pixels, maskSecret),
     utmfy: {
       ...store.settings.utmfy,
       apiToken: maskSecret(store.settings.utmfy.apiToken),
@@ -240,9 +240,8 @@ async function hashUser(value: string) {
 }
 
 async function sendMetaCapi(order: OrderSummary, eventName: "Purchase" | "AddPaymentInfo" | "InitiateCheckout") {
-  const pixelId = store.settings.pixels.metaPixelId.trim();
-  const token = store.settings.pixels.metaAccessToken.trim();
-  if (!store.settings.pixels.metaEnabled || !pixelId || !token || token.includes("•")) return;
+  const targets = metaCapiTargets(store.settings.pixels);
+  if (targets.length === 0) return;
   const phone = order.data.phone.replace(/\D/g, "");
   const payload = {
     data: [
@@ -275,16 +274,28 @@ async function sendMetaCapi(order: OrderSummary, eventName: "Purchase" | "AddPay
     ],
   };
   try {
-    const res = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(pixelId)}/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...payload, access_token: token }),
-    });
-    const body = await res.text();
+    let lastOk = false;
+    let lastMessage = "";
+    for (const target of targets) {
+      const res = await fetch(
+        `https://graph.facebook.com/v21.0/${encodeURIComponent(target.pixelId.trim())}/events`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, access_token: target.accessToken?.trim() }),
+        },
+      );
+      const body = await res.text();
+      lastOk = res.ok;
+      lastMessage = res.ok
+        ? `Meta ${eventName} · ${order.id}`
+        : body.slice(0, 240) || `HTTP ${res.status}`;
+      if (!res.ok) break;
+    }
     store.metaLast = {
       at: new Date().toISOString(),
-      ok: res.ok,
-      message: res.ok ? `Meta ${eventName} · ${order.id}` : body.slice(0, 240) || `HTTP ${res.status}`,
+      ok: lastOk,
+      message: lastMessage,
     };
   } catch (error) {
     store.metaLast = {
@@ -493,15 +504,11 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
       !data.settings.utmfy.apiToken || data.settings.utmfy.apiToken.includes("•")
         ? store.settings.utmfy.apiToken
         : data.settings.utmfy.apiToken;
-    const keepMetaToken =
-      !data.settings.pixels.metaAccessToken || data.settings.pixels.metaAccessToken.includes("•")
-        ? store.settings.pixels.metaAccessToken
-        : data.settings.pixels.metaAccessToken;
     store.settings = {
       ...store.settings,
       storeName: data.settings.storeName,
       webhookUrl: data.settings.webhookUrl,
-      pixels: { ...emptyPixels, ...data.settings.pixels, metaAccessToken: keepMetaToken },
+      pixels: mergePixelSecrets(data.settings.pixels, store.settings.pixels),
       utmfy: { ...data.settings.utmfy, apiToken: keepToken },
       hasPin: Boolean(store.pinHash),
     };
@@ -614,8 +621,9 @@ export const testMetaConnection = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await hydrate();
     requireSession(data.token);
-    if (!store.settings.pixels.metaPixelId) throw new Error("Cole o Pixel ID da Meta.");
-    if (!store.settings.pixels.metaAccessToken) throw new Error("Cole o token da Meta.");
+    const meta = metaCapiTargets(store.settings.pixels)[0] ?? normalizePixels(store.settings.pixels).items.find((item) => item.kind === "meta");
+    if (!meta?.pixelId) throw new Error("Cole o Pixel ID da Meta.");
+    if (!meta?.accessToken) throw new Error("Cole o token da Meta.");
     const dummy: OrderSummary = {
       id: `METATEST${Date.now().toString().slice(-6)}`,
       createdAt: new Date().toISOString(),

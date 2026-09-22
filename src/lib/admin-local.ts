@@ -1,6 +1,8 @@
 import {
   defaultSettings,
+  normalizePixels,
   ONLINE_MS,
+  pixelsAreActive,
   type AdminSettings,
   type PresenceVisitor,
   type PublicTrackingSettings,
@@ -50,7 +52,7 @@ export function loadLocalSettings(): AdminSettings {
     return {
       ...defaultSettings,
       ...parsed,
-      pixels: { ...defaultSettings.pixels, ...(parsed.pixels ?? {}) },
+      pixels: normalizePixels(parsed.pixels),
       utmfy: { ...defaultSettings.utmfy, ...(parsed.utmfy ?? {}) },
       hasPin: localHasPin(),
     };
@@ -60,26 +62,26 @@ export function loadLocalSettings(): AdminSettings {
 }
 
 export function saveLocalSettings(settings: AdminSettings) {
-  window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    ...settings,
+    pixels: normalizePixels(settings.pixels),
+  }));
 }
 
 export function loadPublicSettings(): PublicTrackingSettings | null {
   if (typeof window === "undefined") return null;
   try {
     const settings = loadLocalSettings();
-    const pixels = settings.pixels ?? defaultSettings.pixels;
+    const pixels = normalizePixels(settings.pixels);
     const utmfy = settings.utmfy ?? defaultSettings.utmfy;
-    const pixelsOn =
-      pixels.metaEnabled ||
-      pixels.googleEnabled ||
-      pixels.tiktokEnabled ||
-      pixels.kwaiEnabled ||
-      utmfy.enabled ||
-      Boolean(pixels.customHeadHtml);
+    const pixelsOn = pixelsAreActive(pixels) || utmfy.enabled;
     if (!pixelsOn) return null;
-    const { metaAccessToken: _token, ...publicPixels } = pixels;
     return {
-      pixels: publicPixels,
+      pixels: {
+        ...pixels,
+        metaAccessToken: "",
+        items: pixels.items.map(({ accessToken: _token, ...item }) => item),
+      },
       utmfy: { enabled: utmfy.enabled, pixelId: utmfy.pixelId },
     };
   } catch {

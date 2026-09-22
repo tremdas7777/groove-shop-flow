@@ -2,6 +2,28 @@ import { customerName, type OrderSummary } from "@/lib/checkout";
 import { formatBRL, getProduct } from "@/lib/products";
 import type { AnalyticsEvent, Attribution, DeviceType, FunnelEventName } from "@/lib/tracking";
 
+export type PixelKind = "meta" | "google" | "tiktok" | "kwai" | "snap" | "pinterest" | "custom";
+
+export const PIXEL_KINDS: { id: PixelKind; label: string }[] = [
+  { id: "meta", label: "Meta Ads" },
+  { id: "google", label: "Google Analytics / Ads" },
+  { id: "tiktok", label: "TikTok Ads" },
+  { id: "kwai", label: "Kwai Ads" },
+  { id: "snap", label: "Snapchat Ads" },
+  { id: "pinterest", label: "Pinterest Ads" },
+  { id: "custom", label: "HTML / outro pixel" },
+];
+
+export interface PixelItem {
+  id: string;
+  kind: PixelKind;
+  enabled: boolean;
+  pixelId: string;
+  adsId?: string;
+  accessToken?: string;
+  html?: string;
+}
+
 export interface PixelSettings {
   metaEnabled: boolean;
   metaPixelId: string;
@@ -16,6 +38,7 @@ export interface PixelSettings {
   snapEnabled: boolean;
   snapPixelId: string;
   customHeadHtml: string;
+  items: PixelItem[];
 }
 
 export interface UtmfySettings {
@@ -72,7 +95,179 @@ export const emptyPixels: PixelSettings = {
   snapEnabled: false,
   snapPixelId: "",
   customHeadHtml: "",
+  items: [],
 };
+
+export function pixelKindLabel(kind: PixelKind) {
+  return PIXEL_KINDS.find((item) => item.id === kind)?.label ?? kind;
+}
+
+export function newPixelItem(kind: PixelKind): PixelItem {
+  return {
+    id: `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    kind,
+    enabled: true,
+    pixelId: "",
+    adsId: "",
+    accessToken: "",
+    html: "",
+  };
+}
+
+function pixelsFromLegacy(pixels: PixelSettings): PixelItem[] {
+  const items: PixelItem[] = [];
+  if (pixels.metaEnabled || pixels.metaPixelId || pixels.metaAccessToken) {
+    items.push({
+      id: "legacy-meta",
+      kind: "meta",
+      enabled: pixels.metaEnabled,
+      pixelId: pixels.metaPixelId,
+      accessToken: pixels.metaAccessToken,
+    });
+  }
+  if (pixels.googleEnabled || pixels.gaId || pixels.googleAdsId) {
+    items.push({
+      id: "legacy-google",
+      kind: "google",
+      enabled: pixels.googleEnabled,
+      pixelId: pixels.gaId,
+      adsId: pixels.googleAdsId,
+    });
+  }
+  if (pixels.tiktokEnabled || pixels.tiktokPixelId) {
+    items.push({
+      id: "legacy-tiktok",
+      kind: "tiktok",
+      enabled: pixels.tiktokEnabled,
+      pixelId: pixels.tiktokPixelId,
+    });
+  }
+  if (pixels.kwaiEnabled || pixels.kwaiPixelId) {
+    items.push({
+      id: "legacy-kwai",
+      kind: "kwai",
+      enabled: pixels.kwaiEnabled,
+      pixelId: pixels.kwaiPixelId,
+    });
+  }
+  if (pixels.snapEnabled || pixels.snapPixelId) {
+    items.push({
+      id: "legacy-snap",
+      kind: "snap",
+      enabled: pixels.snapEnabled,
+      pixelId: pixels.snapPixelId,
+    });
+  }
+  if (pixels.customHeadHtml.trim()) {
+    items.push({
+      id: "legacy-custom",
+      kind: "custom",
+      enabled: true,
+      pixelId: "",
+      html: pixels.customHeadHtml,
+    });
+  }
+  return items;
+}
+
+export function syncPixelLegacy(pixels: PixelSettings): PixelSettings {
+  const items = (pixels.items ?? []).map((item) => ({
+    ...item,
+    pixelId: item.pixelId ?? "",
+    adsId: item.adsId ?? "",
+    accessToken: item.accessToken ?? "",
+    html: item.html ?? "",
+  }));
+  const meta = items.find((item) => item.kind === "meta");
+  const google = items.find((item) => item.kind === "google");
+  const tiktok = items.find((item) => item.kind === "tiktok");
+  const kwai = items.find((item) => item.kind === "kwai");
+  const snap = items.find((item) => item.kind === "snap");
+  const customHtml = items
+    .filter((item) => item.kind === "custom" && item.html?.trim())
+    .map((item) => item.html)
+    .join("\n");
+  return {
+    ...emptyPixels,
+    ...pixels,
+    items,
+    metaEnabled: Boolean(meta?.enabled && meta.pixelId),
+    metaPixelId: meta?.pixelId ?? "",
+    metaAccessToken: meta?.accessToken ?? "",
+    googleEnabled: Boolean(google?.enabled && (google.pixelId || google.adsId)),
+    gaId: google?.pixelId ?? "",
+    googleAdsId: google?.adsId ?? "",
+    tiktokEnabled: Boolean(tiktok?.enabled && tiktok.pixelId),
+    tiktokPixelId: tiktok?.pixelId ?? "",
+    kwaiEnabled: Boolean(kwai?.enabled && kwai.pixelId),
+    kwaiPixelId: kwai?.pixelId ?? "",
+    snapEnabled: Boolean(snap?.enabled && snap.pixelId),
+    snapPixelId: snap?.pixelId ?? "",
+    customHeadHtml: customHtml,
+  };
+}
+
+export function normalizePixels(pixels?: Partial<PixelSettings> | null): PixelSettings {
+  const merged = { ...emptyPixels, ...pixels, items: pixels?.items ?? emptyPixels.items };
+  const items = merged.items.length > 0 ? merged.items : pixelsFromLegacy(merged);
+  return syncPixelLegacy({ ...merged, items });
+}
+
+export function listPixelItems(pixels: PixelSettings) {
+  return normalizePixels(pixels).items;
+}
+
+export function pixelsAreActive(pixels: PixelSettings) {
+  return listPixelItems(pixels).some(
+    (item) => item.enabled && Boolean(item.pixelId || item.adsId || item.html?.trim()),
+  );
+}
+
+export function maskPixelSettings(pixels: PixelSettings, mask: (value: string) => string): PixelSettings {
+  const n = normalizePixels(pixels);
+  return {
+    ...n,
+    metaAccessToken: mask(n.metaAccessToken),
+    items: n.items.map((item) => ({
+      ...item,
+      accessToken: mask(item.accessToken ?? ""),
+    })),
+  };
+}
+
+export function mergePixelSecrets(incoming: PixelSettings, stored: PixelSettings): PixelSettings {
+  const next = normalizePixels(incoming);
+  const prevById = Object.fromEntries(normalizePixels(stored).items.map((item) => [item.id, item]));
+  const items = next.items.map((item) => {
+    const prev = prevById[item.id];
+    const accessToken =
+      !item.accessToken || item.accessToken.includes("•")
+        ? (prev?.accessToken ?? "")
+        : item.accessToken;
+    return { ...item, accessToken };
+  });
+  return syncPixelLegacy({ ...next, items });
+}
+
+export function publicPixels(pixels: PixelSettings): PublicTrackingSettings["pixels"] {
+  const n = normalizePixels(pixels);
+  return {
+    ...n,
+    metaAccessToken: "",
+    items: n.items.map(({ accessToken: _token, ...item }) => item),
+  };
+}
+
+export function metaCapiTargets(pixels: PixelSettings) {
+  return normalizePixels(pixels).items.filter(
+    (item) =>
+      item.kind === "meta" &&
+      item.enabled &&
+      item.pixelId.trim() &&
+      Boolean(item.accessToken?.trim()) &&
+      !item.accessToken?.includes("•"),
+  );
+}
 
 export const emptyUtmfy: UtmfySettings = {
   enabled: false,

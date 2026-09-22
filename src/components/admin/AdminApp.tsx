@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   BarChart3,
@@ -7,10 +7,12 @@ import {
   LogOut,
   Megaphone,
   Package,
+  Plus,
   Radio,
   Settings,
   ShoppingBag,
   Target,
+  Trash2,
 } from "lucide-react";
 import {
   Area,
@@ -36,19 +38,26 @@ import {
 } from "@/lib/admin-api";
 import {
   PERIODS,
+  PIXEL_KINDS,
   buildCampaigns,
   buildFunnel,
   buildLiveSessions,
   defaultSettings,
   inPeriod,
+  mergePixelSecrets,
   money,
+  newPixelItem,
+  normalizePixels,
   orderStatus,
+  pixelKindLabel,
   relativeTime,
   sourceLabel,
   statusLabel,
   type AdminSettings,
   type AdminSnapshot,
   type Period,
+  type PixelItem,
+  type PixelKind,
 } from "@/lib/admin";
 import { loadLocalEvents } from "@/lib/tracking";
 import { customerName, loadOrders, type OrderSummary } from "@/lib/checkout";
@@ -114,6 +123,8 @@ export function AdminApp() {
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
+    let settingsLoaded = false;
+    setSettings(loadLocalSettings());
     const pull = async () => {
       const local = mergeLocal({
         settings: loadLocalSettings(),
@@ -121,24 +132,15 @@ export function AdminApp() {
         orders: [],
         visitors: [],
       });
-      if (!cancelled) {
-        setSnap(local);
-        setSettings((prev) => ({ ...prev, ...local.settings }));
-      }
+      if (!cancelled) setSnap(local);
       try {
         const next = await getAdminSnapshot({ data: { token } });
         if (cancelled) return;
         setSnap(mergeLocal(next));
-        setSettings((prev) => ({
-          ...prev,
-          ...next.settings,
-          pixels: next.settings.pixels,
-          utmfy: {
-            ...defaultSettings.utmfy,
-            ...next.settings.utmfy,
-            apiToken: next.settings.utmfy.apiToken || prev.utmfy.apiToken,
-          },
-        }));
+        if (!settingsLoaded) {
+          settingsLoaded = true;
+          setSettings((prev) => keepTypedSecrets(prev, next.settings));
+        }
       } catch {
         // mantém o snapshot local
       }
@@ -387,6 +389,26 @@ export function AdminApp() {
   );
 }
 
+function keepSecret(next: string | undefined, prev: string | undefined) {
+  const incoming = next ?? "";
+  const current = prev ?? "";
+  if (current && !current.includes("•")) return current;
+  return incoming;
+}
+
+function keepTypedSecrets(prev: AdminSettings, incoming: AdminSettings): AdminSettings {
+  return {
+    ...prev,
+    ...incoming,
+    pixels: mergePixelSecrets(incoming.pixels, prev.pixels),
+    utmfy: {
+      ...defaultSettings.utmfy,
+      ...incoming.utmfy,
+      apiToken: keepSecret(incoming.utmfy?.apiToken, prev.utmfy?.apiToken),
+    },
+  };
+}
+
 function mergeLocal(snap: AdminSnapshot): AdminSnapshot {
   const localEvents = loadLocalEvents();
   const localOrders = loadOrders();
@@ -430,7 +452,7 @@ async function saveSettings(
         },
       },
     });
-    setSettings(next);
+    setSettings(keepTypedSecrets(settings, next));
     toast.success("Configurações salvas. Os pixels valem para todos os visitantes.");
   } catch {
     toast.success("Salvo neste navegador. Publique e configure o servidor para valer em todos os visitantes.");
@@ -901,100 +923,163 @@ function PixelsPanel({
   onChange: (settings: AdminSettings) => void;
   onSave: () => void;
 }) {
-  const p = settings.pixels;
-  const set = (partial: Partial<AdminSettings["pixels"]>) =>
-    onChange({ ...settings, pixels: { ...p, ...partial } });
+  const pixels = normalizePixels(settings.pixels);
+  const items = pixels.items;
+  const [kind, setKind] = useState<PixelKind>("meta");
+
+  const commit = (nextItems: PixelItem[]) => {
+    onChange({
+      ...settings,
+      pixels: normalizePixels({ ...pixels, items: nextItems }),
+    });
+  };
+
+  const patchItem = (id: string, partial: Partial<PixelItem>) => {
+    commit(items.map((item) => (item.id === id ? { ...item, ...partial } : item)));
+  };
+
+  const removeItem = (id: string) => {
+    if (!window.confirm("Remover este pixel?")) return;
+    commit(items.filter((item) => item.id !== id));
+  };
+
   return (
     <div className="max-w-3xl space-y-5">
       <div>
         <h2 className="text-xl font-semibold">Pixels de tráfego</h2>
         <p className="text-sm text-white/50">
-          Pixel no navegador + token da API de Conversões da Meta para Purchase no servidor.
+          Adicione ou remova pixels. O de Meta também envia Purchase pela API de Conversões.
         </p>
       </div>
-      <PixelField
-        title="Meta Ads"
-        enabled={p.metaEnabled}
-        onEnabled={(metaEnabled) => set({ metaEnabled })}
-        label="Pixel ID"
-        value={p.metaPixelId}
-        onValue={(metaPixelId) => set({ metaPixelId })}
-        placeholder="000000000000000"
-        extra={
-          <>
-            <Field
-              label="Token da API de Conversões"
-              value={p.metaAccessToken}
-              onChange={(metaAccessToken) => set({ metaAccessToken })}
-              placeholder="EAAxxxxxxxx"
-              type="password"
-            />
-            {last && (
-              <p className={cn("text-sm", last.ok ? "text-emerald-300" : "text-red-300")}>
-                Último envio CAPI: {last.message} · {relativeTime(last.at)}
-              </p>
-            )}
+
+      {items.length === 0 && (
+        <p className="rounded-2xl border border-dashed border-white/15 px-4 py-8 text-sm text-white/45">
+          Nenhum pixel cadastrado. Adicione Meta, Google, TikTok ou outro abaixo.
+        </p>
+      )}
+
+      {items.map((item) => (
+        <div key={item.id} className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={item.kind}
+              onChange={(e) => patchItem(item.id, { kind: e.target.value as PixelKind })}
+              className="h-10 rounded-xl border border-white/10 bg-black/30 px-3 text-sm"
+            >
+              {PIXEL_KINDS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <label className="ml-auto flex items-center gap-2 text-sm text-white/70">
+              <input
+                type="checkbox"
+                checked={item.enabled}
+                onChange={(e) => patchItem(item.id, { enabled: e.target.checked })}
+              />
+              Ativo
+            </label>
             <button
               type="button"
-              onClick={async () => {
-                try {
-                  const result = await testMetaConnection({ data: { token } });
-                  toast[result?.ok ? "success" : "error"](result?.message ?? "Sem retorno");
-                } catch (error) {
-                  toast.error(error instanceof Error ? error.message : "Falha no teste Meta");
-                }
-              }}
-              className="h-11 rounded-xl border border-white/15 px-4 text-sm hover:bg-white/5"
+              onClick={() => removeItem(item.id)}
+              className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-white/10 px-3 text-sm text-red-300 hover:bg-red-500/10"
             >
-              Testar Meta CAPI
+              <Trash2 className="h-3.5 w-3.5" />
+              Remover
             </button>
-          </>
-        }
-      />
-      <PixelField
-        title="Google Analytics 4"
-        enabled={p.googleEnabled}
-        onEnabled={(googleEnabled) => set({ googleEnabled })}
-        label="Measurement ID"
-        value={p.gaId}
-        onValue={(gaId) => set({ gaId })}
-        placeholder="G-XXXXXXXX"
-        extra={
-          <Field
-            label="Google Ads (AW-)"
-            value={p.googleAdsId}
-            onChange={(googleAdsId) => set({ googleAdsId })}
-            placeholder="AW-000000000"
-          />
-        }
-      />
-      <PixelField
-        title="TikTok Ads"
-        enabled={p.tiktokEnabled}
-        onEnabled={(tiktokEnabled) => set({ tiktokEnabled })}
-        label="Pixel ID"
-        value={p.tiktokPixelId}
-        onValue={(tiktokPixelId) => set({ tiktokPixelId })}
-        placeholder="CXXXXXXXX"
-      />
-      <PixelField
-        title="Kwai Ads"
-        enabled={p.kwaiEnabled}
-        onEnabled={(kwaiEnabled) => set({ kwaiEnabled })}
-        label="Pixel ID"
-        value={p.kwaiPixelId}
-        onValue={(kwaiPixelId) => set({ kwaiPixelId })}
-      />
-      <label className="block">
-        <span className="text-xs text-white/50">HTML extra no head (GTM, Snap, Pinterest…)</span>
-        <textarea
-          value={p.customHeadHtml}
-          onChange={(e) => set({ customHeadHtml: e.target.value })}
-          rows={6}
-          className="mt-1 w-full rounded-xl border border-white/10 bg-[#10182a] p-3 font-mono text-xs"
-          placeholder={'<script>…</script>'}
-        />
-      </label>
+          </div>
+          <div className="mt-3 grid gap-3">
+            {item.kind !== "custom" && (
+              <Field
+                label={item.kind === "google" ? "Measurement ID (G-)" : "Pixel ID"}
+                value={item.pixelId}
+                onChange={(pixelId) => patchItem(item.id, { pixelId })}
+                placeholder={
+                  item.kind === "google"
+                    ? "G-XXXXXXXX"
+                    : item.kind === "tiktok"
+                      ? "CXXXXXXXX"
+                      : "000000000000000"
+                }
+              />
+            )}
+            {item.kind === "google" && (
+              <Field
+                label="Google Ads (AW-)"
+                value={item.adsId ?? ""}
+                onChange={(adsId) => patchItem(item.id, { adsId })}
+                placeholder="AW-000000000"
+              />
+            )}
+            {item.kind === "meta" && (
+              <>
+                <Field
+                  label="Token da API de Conversões"
+                  value={item.accessToken ?? ""}
+                  onChange={(accessToken) => patchItem(item.id, { accessToken })}
+                  placeholder="EAAxxxxxxxx"
+                  type="password"
+                  secret
+                />
+                {last && (
+                  <p className={cn("text-sm", last.ok ? "text-emerald-300" : "text-red-300")}>
+                    Último envio CAPI: {last.message} · {relativeTime(last.at)}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const result = await testMetaConnection({ data: { token } });
+                      toast[result?.ok ? "success" : "error"](result?.message ?? "Sem retorno");
+                    } catch (error) {
+                      toast.error(error instanceof Error ? error.message : "Falha no teste Meta");
+                    }
+                  }}
+                  className="h-11 rounded-xl border border-white/15 px-4 text-sm hover:bg-white/5"
+                >
+                  Testar Meta CAPI
+                </button>
+              </>
+            )}
+            {item.kind === "custom" && (
+              <label className="block">
+                <span className="text-xs text-white/50">HTML do pixel</span>
+                <textarea
+                  value={item.html ?? ""}
+                  onChange={(e) => patchItem(item.id, { html: e.target.value })}
+                  rows={5}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-black/20 p-3 font-mono text-xs"
+                  placeholder={"<script>…</script>"}
+                />
+              </label>
+            )}
+          </div>
+        </div>
+      ))}
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <select
+          value={kind}
+          onChange={(e) => setKind(e.target.value as PixelKind)}
+          className="h-11 rounded-xl border border-white/10 bg-[#10182a] px-3 text-sm"
+        >
+          {PIXEL_KINDS.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => commit([...items, newPixelItem(kind)])}
+          className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-white/15 px-4 text-sm hover:bg-white/5"
+        >
+          <Plus className="h-4 w-4" />
+          Adicionar {pixelKindLabel(kind)}
+        </button>
+      </div>
       <SaveButton onClick={onSave} />
     </div>
   );
@@ -1039,6 +1124,7 @@ function UtmifyPanel({
         onChange={(apiToken) => set({ apiToken })}
         placeholder="Cole o token de Integrações → API Credentials"
         type="password"
+        secret
       />
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={u.testMode} onChange={(e) => set({ testMode: e.target.checked })} />
@@ -1159,51 +1245,20 @@ function RecentOrders({ orders }: { orders: OrderSummary[] }) {
   );
 }
 
-function PixelField({
-  title,
-  enabled,
-  onEnabled,
-  label,
-  value,
-  onValue,
-  placeholder,
-  extra,
-}: {
-  title: string;
-  enabled: boolean;
-  onEnabled: (value: boolean) => void;
-  label: string;
-  value: string;
-  onValue: (value: string) => void;
-  placeholder?: string;
-  extra?: ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
-      <label className="flex items-center justify-between gap-3">
-        <span className="font-medium">{title}</span>
-        <input type="checkbox" checked={enabled} onChange={(e) => onEnabled(e.target.checked)} />
-      </label>
-      <div className="mt-3 grid gap-3">
-        <Field label={label} value={value} onChange={onValue} placeholder={placeholder} />
-        {extra}
-      </div>
-    </div>
-  );
-}
-
 function Field({
   label,
   value,
   onChange,
   placeholder,
   type = "text",
+  secret,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   type?: string;
+  secret?: boolean;
 }) {
   return (
     <label className="block">
@@ -1212,6 +1267,11 @@ function Field({
         type={type}
         value={value}
         placeholder={placeholder}
+        autoComplete={secret ? "new-password" : "off"}
+        spellCheck={false}
+        onFocus={() => {
+          if (secret && value.includes("•")) onChange("");
+        }}
         onChange={(e) => onChange(e.target.value)}
         className="mt-1 h-11 w-full rounded-xl border border-white/10 bg-black/20 px-3 text-sm outline-none focus:border-[#E0B761]"
       />

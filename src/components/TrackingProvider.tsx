@@ -2,6 +2,7 @@ import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, type ReactNode } from "react";
 import { getPublicTrackingSettings, heartbeatVisitor, ingestStoreEvent } from "@/lib/admin-api";
 import type { PublicTrackingSettings } from "@/lib/admin";
+import { listPixelItems } from "@/lib/admin";
 import { loadPublicSettings, touchLocalPresence } from "@/lib/admin-local";
 import {
   captureAttribution,
@@ -27,71 +28,129 @@ function ensureScript(src: string, attrs: Record<string, string> = {}) {
 }
 
 function injectPixels(settings: PublicTrackingSettings) {
-  const { pixels, utmfy } = settings;
+  const items = listPixelItems(settings.pixels).filter(
+    (item) => item.enabled && Boolean(item.pixelId || item.adsId || item.html?.trim()),
+  );
+  const inited = {
+    meta: new Set<string>(),
+    google: new Set<string>(),
+    tiktok: new Set<string>(),
+    kwai: new Set<string>(),
+    snap: new Set<string>(),
+    pinterest: new Set<string>(),
+  };
 
-  if (pixels.metaEnabled && pixels.metaPixelId && !window.fbq) {
-    const stub = function (...args: unknown[]) {
-      (stub as { queue: unknown[]; callMethod?: (...a: unknown[]) => void }).queue.push(args);
-    } as ((...args: unknown[]) => void) & { queue: unknown[]; loaded: boolean; version: string };
-    stub.queue = [];
-    stub.loaded = true;
-    stub.version = "2.0";
-    window.fbq = stub;
-    window.fbq("init", pixels.metaPixelId);
-    window.fbq("track", "PageView");
-    ensureScript("https://connect.facebook.net/en_US/fbevents.js");
-  }
-
-  if (pixels.googleEnabled && (pixels.gaId || pixels.googleAdsId)) {
-    const id = pixels.gaId || pixels.googleAdsId;
-    if (!window.gtag) {
-      window.dataLayer = window.dataLayer ?? [];
-      window.gtag = function (...args: unknown[]) {
-        window.dataLayer?.push(args);
-      };
-      window.gtag("js", new Date());
-      ensureScript(`https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(id)}`);
+  for (const item of items) {
+    if (item.kind === "meta" && item.pixelId && !inited.meta.has(item.pixelId)) {
+      if (!window.fbq) {
+        const stub = function (...args: unknown[]) {
+          (stub as { queue: unknown[]; callMethod?: (...a: unknown[]) => void }).queue.push(args);
+        } as ((...args: unknown[]) => void) & { queue: unknown[]; loaded: boolean; version: string };
+        stub.queue = [];
+        stub.loaded = true;
+        stub.version = "2.0";
+        window.fbq = stub;
+        ensureScript("https://connect.facebook.net/en_US/fbevents.js");
+      }
+      window.fbq("init", item.pixelId);
+      if (inited.meta.size === 0) window.fbq("track", "PageView");
+      inited.meta.add(item.pixelId);
     }
-    if (pixels.gaId) window.gtag?.("config", pixels.gaId);
-    if (pixels.googleAdsId) window.gtag?.("config", pixels.googleAdsId);
-  }
 
-  if (pixels.tiktokEnabled && pixels.tiktokPixelId) {
-    if (!window.ttq) {
-      const ttq = {
-        load: (pixelId: string) => {
-          ensureScript("https://analytics.tiktok.com/i18n/pixel/events.js", {
-            "data-id": pixelId,
-          });
-        },
-        page: () => undefined,
-        track: (..._args: unknown[]) => undefined,
-      };
-      window.ttq = ttq;
+    if (item.kind === "google" && (item.pixelId || item.adsId)) {
+      const ids = [item.pixelId, item.adsId].filter(Boolean) as string[];
+      const primary = ids[0];
+      if (!window.gtag && primary) {
+        window.dataLayer = window.dataLayer ?? [];
+        window.gtag = function (...args: unknown[]) {
+          window.dataLayer?.push(args);
+        };
+        window.gtag("js", new Date());
+        ensureScript(`https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(primary)}`);
+      }
+      for (const id of ids) {
+        if (inited.google.has(id)) continue;
+        window.gtag?.("config", id);
+        inited.google.add(id);
+      }
     }
-    window.ttq.load(pixels.tiktokPixelId);
-    window.ttq.page();
+
+    if (item.kind === "tiktok" && item.pixelId && !inited.tiktok.has(item.pixelId)) {
+      if (!window.ttq) {
+        window.ttq = {
+          load: (pixelId: string) => {
+            ensureScript("https://analytics.tiktok.com/i18n/pixel/events.js", {
+              "data-id": pixelId,
+            });
+          },
+          page: () => undefined,
+          track: (..._args: unknown[]) => undefined,
+        };
+      }
+      window.ttq.load(item.pixelId);
+      window.ttq.page();
+      inited.tiktok.add(item.pixelId);
+    }
+
+    if (item.kind === "kwai" && item.pixelId && !inited.kwai.has(item.pixelId)) {
+      if (!window.kwaiq) {
+        window.kwaiq = {
+          load: () => undefined,
+          track: (..._args: unknown[]) => undefined,
+        };
+      }
+      window.kwaiq.load(item.pixelId);
+      inited.kwai.add(item.pixelId);
+    }
+
+    if (item.kind === "snap" && item.pixelId && !inited.snap.has(item.pixelId)) {
+      if (!window.snaptr) {
+        const snaptr = function (...args: unknown[]) {
+          (snaptr as { queue: unknown[] }).queue.push(args);
+        } as ((...args: unknown[]) => void) & { queue: unknown[] };
+        snaptr.queue = [];
+        window.snaptr = snaptr;
+        ensureScript("https://sc-static.net/scevent.min.js");
+      }
+      window.snaptr("init", item.pixelId);
+      window.snaptr("track", "PAGE_VIEW");
+      inited.snap.add(item.pixelId);
+    }
+
+    if (item.kind === "pinterest" && item.pixelId && !inited.pinterest.has(item.pixelId)) {
+      if (!window.pintrk) {
+        const pintrk = function (...args: unknown[]) {
+          (pintrk as { queue: unknown[] }).queue.push(args);
+        } as ((...args: unknown[]) => void) & { queue: unknown[] };
+        pintrk.queue = [];
+        window.pintrk = pintrk;
+        ensureScript("https://s.pinimg.com/ct/core.js");
+      }
+      window.pintrk("load", item.pixelId);
+      window.pintrk("page");
+      inited.pinterest.add(item.pixelId);
+    }
+
+    if (item.kind === "custom" && item.html?.trim()) {
+      const mark = `asics-custom-pixel-${item.id}`;
+      if (!document.getElementById(mark)) {
+        const holder = document.createElement("div");
+        holder.id = mark;
+        holder.innerHTML = item.html;
+        document.head.appendChild(holder);
+      }
+    }
   }
 
-  if (utmfy.enabled) {
-    if (utmfy.pixelId) window.pixelId = utmfy.pixelId;
+  if (settings.utmfy.enabled) {
+    if (settings.utmfy.pixelId) window.pixelId = settings.utmfy.pixelId;
     ensureScript("https://cdn.utmify.com.br/scripts/utms/latest.js", {
       "data-utmify-prevent-xcod-sck": "",
       "data-utmify-prevent-subids": "",
       defer: "",
     });
-    if (utmfy.pixelId) {
+    if (settings.utmfy.pixelId) {
       ensureScript("https://cdn.utmify.com.br/scripts/pixel/pixel.js");
-    }
-  }
-
-  if (pixels.customHeadHtml) {
-    const mark = "asics-custom-pixels";
-    if (!document.getElementById(mark)) {
-      const holder = document.createElement("div");
-      holder.id = mark;
-      holder.innerHTML = pixels.customHeadHtml;
-      document.head.appendChild(holder);
     }
   }
 }

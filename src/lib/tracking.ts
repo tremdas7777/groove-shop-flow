@@ -171,6 +171,8 @@ declare global {
     gtag?: (...args: unknown[]) => void;
     dataLayer?: unknown[];
     kwaiq?: { track: (...args: unknown[]) => void; load: (id: string) => void };
+    snaptr?: ((...args: unknown[]) => void) & { queue?: unknown[] };
+    pintrk?: ((...args: unknown[]) => void) & { queue?: unknown[] };
     pixelId?: string;
   }
 }
@@ -248,6 +250,12 @@ export function firePixels(event: AnalyticsEvent) {
 
   if (event.name === "purchase" && window.kwaiq?.track) {
     window.kwaiq.track("purchase", { value, currency });
+  }
+  if (event.name === "purchase" && window.snaptr) {
+    window.snaptr("track", "PURCHASE", { price: value, currency });
+  }
+  if (event.name === "purchase" && window.pintrk) {
+    window.pintrk("track", "checkout", { value, currency });
   }
 }
 

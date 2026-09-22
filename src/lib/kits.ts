@@ -17,6 +17,9 @@ export interface RunningKit {
   pieces: KitPiece[];
 }
 
+const img = (id: string, file: string) =>
+  `https://asicsbr.vteximg.com.br/arquivos/ids/${id}-800-800/${file}`;
+
 const MALE_SHOE = "https://imgcentauro-a.akamaihd.net/1300x1300/M178TS29A1.jpg";
 const FEMALE_SHOE = "https://imgcentauro-a.akamaihd.net/1300x1300/992317FPA2.jpg";
 
@@ -25,7 +28,7 @@ export const runningKits: RunningKit[] = [
     id: 90001,
     gender: "masculino",
     title: "Kit Corrida Completo Masculino",
-    subtitle: "Camiseta + shorts + Novablast 5 + meia",
+    subtitle: "Camiseta Road + shorts Match 7\" + Novablast 5 + meia",
     price: 397,
     compareAt: 897,
     photo: MALE_SHOE,
@@ -33,14 +36,14 @@ export const runningKits: RunningKit[] = [
     shoeSizes: ["39", "40", "41", "42", "43", "44"],
     pieces: [
       {
-        name: "Camiseta ASICS Core Run",
+        name: "Camiseta ASICS Road",
         kind: "roupa",
-        photo: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=900&q=80",
+        photo: img("3243848", "2011C992_001_GM_FT_GLOBAL.jpg"),
       },
       {
-        name: "Shorts ASICS 7\"",
+        name: "Shorts ASICS Match 7\"",
         kind: "roupa",
-        photo: "https://images.unsplash.com/photo-1517838277536-f4d4d36ea28c?auto=format&fit=crop&w=900&q=80",
+        photo: img("3560696", "2041A357_001_GM_FT_GLOBAL.jpg"),
       },
       {
         name: "Tênis Novablast 5 Masculino",
@@ -48,9 +51,9 @@ export const runningKits: RunningKit[] = [
         photo: MALE_SHOE,
       },
       {
-        name: "Meia ASICS Performance",
+        name: "Meia ASICS Basic",
         kind: "meia",
-        photo: "https://images.unsplash.com/photo-1586350977771-b3b0abd50c82?auto=format&fit=crop&w=900&q=80",
+        photo: img("270717", "ZKB4056.90-1.jpg"),
       },
     ],
   },
@@ -58,7 +61,7 @@ export const runningKits: RunningKit[] = [
     id: 90002,
     gender: "feminino",
     title: "Kit Corrida Completo Feminino",
-    subtitle: "Top + shorts + Novablast 5 + meia",
+    subtitle: "Top Nagino Flex + shorts Icon 4\" + Novablast 5 + meia",
     price: 397,
     compareAt: 897,
     photo: FEMALE_SHOE,
@@ -66,14 +69,14 @@ export const runningKits: RunningKit[] = [
     shoeSizes: ["34", "35", "36", "37", "38", "39"],
     pieces: [
       {
-        name: "Top ASICS Core Run",
+        name: "Top ASICS Nagino Flex",
         kind: "roupa",
-        photo: "https://images.unsplash.com/photo-1518611012118-696072aa579a?auto=format&fit=crop&w=900&q=80",
+        photo: img("3639201", "2032D389_002_GF_FT_GLOBAL.jpg"),
       },
       {
-        name: "Shorts ASICS Feminino",
+        name: "Shorts ASICS Icon 4\"",
         kind: "roupa",
-        photo: "https://images.unsplash.com/photo-1518310383802-640c2de311b2?auto=format&fit=crop&w=900&q=80",
+        photo: img("3704851", "2012D361_001_GF_FT_GLOBAL.jpg"),
       },
       {
         name: "Tênis Novablast 5 Feminino",
@@ -81,9 +84,9 @@ export const runningKits: RunningKit[] = [
         photo: FEMALE_SHOE,
       },
       {
-        name: "Meia ASICS Performance",
+        name: "Meia ASICS Basic",
         kind: "meia",
-        photo: "https://images.unsplash.com/photo-1586350977771-b3b0abd50c82?auto=format&fit=crop&w=900&q=80",
+        photo: img("270717", "ZKB4056.90-1.jpg"),
       },
     ],
   },

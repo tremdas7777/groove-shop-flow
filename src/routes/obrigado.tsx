@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 import { CheckoutShell } from "@/components/CheckoutShell";
 import { customerFirstName, loadOrder, persistOrder, type OrderSummary } from "@/lib/checkout";
-import { runningKits, type RunningKit } from "@/lib/kits";
+import { runningKits, type KitPiece, type RunningKit } from "@/lib/kits";
 import { createMagicPayPix } from "@/lib/magicpay";
 import { formatBRL } from "@/lib/products";
 import { getAttribution, getSessionId, track } from "@/lib/tracking";
@@ -166,86 +166,30 @@ function ThankYouPage() {
 
       {!alreadyKit && (
         <section className="mt-10">
-          <div className="mx-auto max-w-2xl text-center">
+          <div className="text-center">
             <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-primary">
               Oferta exclusiva
             </p>
-            <h2 className="mt-2 text-[22px] font-semibold text-[#222]">
+            <h2 className="mt-2 text-[22px] font-semibold text-[#222] sm:text-[28px]">
               Complete seu treino com o kit de corrida
             </h2>
-            <p className="mt-2 text-[14px] text-[#555]">
-              Roupa + tênis + meia no mesmo envio. Escolha o kit masculino ou feminino.
+            <p className="mx-auto mt-2 max-w-xl text-[14px] text-[#555]">
+              Roupa + tênis + meia no mesmo envio. Toque na peça para ver a foto real da ASICS.
             </p>
           </div>
-          <div className="mt-8 grid gap-5 lg:grid-cols-2">
+          <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-5">
             {runningKits.map((kit) => (
-              <article
+              <KitCard
                 key={kit.id}
-                className={cn(
-                  "border border-[#e4e5f3] p-4 sm:p-5",
-                  picked === kit.id && "border-primary",
-                )}
-              >
-                <img src={kit.photo} alt="" className="aspect-[4/3] w-full bg-[#f4f4f4] object-contain" />
-                <p className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-primary">
-                  {kit.gender === "masculino" ? "Masculino" : "Feminino"}
-                </p>
-                <h3 className="mt-1 text-[18px] font-semibold text-[#222]">{kit.title}</h3>
-                <p className="text-[13px] text-[#666]">{kit.subtitle}</p>
-                <ul className="mt-4 grid grid-cols-2 gap-2">
-                  {kit.pieces.map((piece) => (
-                    <li key={piece.name} className="flex items-center gap-2 text-[12px] text-[#444]">
-                      <img src={piece.photo} alt="" className="h-10 w-10 bg-[#f4f4f4] object-cover" />
-                      {piece.name}
-                    </li>
-                  ))}
-                </ul>
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <label className="text-left text-[12px] text-[#666]">
-                    Roupa
-                    <select
-                      value={clothes[kit.id]}
-                      onChange={(e) => setClothes((prev) => ({ ...prev, [kit.id]: e.target.value }))}
-                      className="mt-1 h-11 w-full border border-[#e4e5f3] px-2 text-[14px] text-[#222]"
-                    >
-                      {kit.clothesSizes.map((size) => (
-                        <option key={size} value={size}>
-                          {size}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="text-left text-[12px] text-[#666]">
-                    Tênis
-                    <select
-                      value={shoes[kit.id]}
-                      onChange={(e) => setShoes((prev) => ({ ...prev, [kit.id]: e.target.value }))}
-                      className="mt-1 h-11 w-full border border-[#e4e5f3] px-2 text-[14px] text-[#222]"
-                    >
-                      {kit.shoeSizes.map((size) => (
-                        <option key={size} value={size}>
-                          {size}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="mt-4 flex items-end justify-between">
-                  <div>
-                    <p className="text-[13px] text-[#888] line-through">{formatBRL(kit.compareAt)}</p>
-                    <p className="text-[22px] font-semibold text-[#222]">{formatBRL(kit.price)}</p>
-                  </div>
-                  <p className="text-[12px] text-[#0d7a3f]">ou 10x de {formatBRL(kit.price / 10)}</p>
-                </div>
-                <button
-                  type="button"
-                  disabled={paying}
-                  onClick={() => void chooseKit(kit)}
-                  className="mt-4 h-12 w-full rounded-full bg-primary text-[14px] font-semibold text-white disabled:opacity-60"
-                >
-                  {paying && picked === kit.id ? "Gerando PIX do kit..." : "Quero este kit"}
-                </button>
-              </article>
+                kit={kit}
+                clothes={clothes[kit.id] ?? "M"}
+                shoes={shoes[kit.id] ?? "40"}
+                paying={paying}
+                selected={picked === kit.id}
+                onClothes={(value) => setClothes((prev) => ({ ...prev, [kit.id]: value }))}
+                onShoes={(value) => setShoes((prev) => ({ ...prev, [kit.id]: value }))}
+                onBuy={() => void chooseKit(kit)}
+              />
             ))}
           </div>
           {payError && <p className="mt-4 text-center text-[14px] text-red-600">{payError}</p>}
@@ -258,5 +202,112 @@ function ThankYouPage() {
         </Link>
       </div>
     </CheckoutShell>
+  );
+}
+
+function KitCard({
+  kit,
+  clothes,
+  shoes,
+  paying,
+  selected,
+  onClothes,
+  onShoes,
+  onBuy,
+}: {
+  kit: RunningKit;
+  clothes: string;
+  shoes: string;
+  paying: boolean;
+  selected: boolean;
+  onClothes: (value: string) => void;
+  onShoes: (value: string) => void;
+  onBuy: () => void;
+}) {
+  const [focus, setFocus] = useState<KitPiece>(kit.pieces.find((piece) => piece.kind === "tenis") ?? kit.pieces[0]);
+  return (
+    <article
+      className={cn(
+        "flex flex-col border border-[#e4e5f3] bg-white p-3 sm:p-4",
+        selected && "border-primary",
+      )}
+    >
+      <div className="relative aspect-square bg-[#f4f4f4]">
+        <img src={focus.photo} alt={focus.name} className="h-full w-full object-contain p-4" />
+        <span className="absolute left-3 top-3 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-primary">
+          {kit.gender === "masculino" ? "Masculino" : "Feminino"}
+        </span>
+      </div>
+      <p className="mt-3 text-center text-[13px] font-medium text-[#222]">{focus.name}</p>
+      <ul className="mt-3 grid grid-cols-2 gap-2">
+        {kit.pieces.map((piece) => {
+          const active = focus.name === piece.name;
+          return (
+            <li key={piece.name}>
+              <button
+                type="button"
+                onClick={() => setFocus(piece)}
+                className={cn(
+                  "w-full border bg-[#f7f7f9] p-2 text-left",
+                  active ? "border-primary" : "border-[#e4e5f3]",
+                )}
+              >
+                <img src={piece.photo} alt={piece.name} className="aspect-square w-full object-contain" />
+                <span className="mt-1.5 block text-[12px] font-medium leading-tight text-[#222]">
+                  {piece.name}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <h3 className="mt-4 text-[18px] font-semibold leading-snug text-[#222]">{kit.title}</h3>
+      <p className="mt-1 text-[13px] text-[#666]">{kit.subtitle}</p>
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <label className="text-left text-[12px] text-[#666]">
+          Roupa
+          <select
+            value={clothes}
+            onChange={(e) => onClothes(e.target.value)}
+            className="mt-1 h-11 w-full border border-[#e4e5f3] px-2 text-[14px] text-[#222]"
+          >
+            {kit.clothesSizes.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-left text-[12px] text-[#666]">
+          Tênis
+          <select
+            value={shoes}
+            onChange={(e) => onShoes(e.target.value)}
+            className="mt-1 h-11 w-full border border-[#e4e5f3] px-2 text-[14px] text-[#222]"
+          >
+            {kit.shoeSizes.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="mt-4 flex items-end justify-between">
+        <div>
+          <p className="text-[13px] text-[#888] line-through">{formatBRL(kit.compareAt)}</p>
+          <p className="text-[22px] font-semibold text-[#222]">{formatBRL(kit.price)}</p>
+        </div>
+        <p className="text-[12px] text-[#0d7a3f]">ou 10x de {formatBRL(kit.price / 10)}</p>
+      </div>
+      <button
+        type="button"
+        disabled={paying}
+        onClick={onBuy}
+        className="mt-4 h-12 w-full rounded-full bg-primary text-[14px] font-semibold text-white disabled:opacity-60"
+      >
+        {paying && selected ? "Gerando PIX do kit..." : "Quero este kit"}
+      </button>
+    </article>
   );
 }

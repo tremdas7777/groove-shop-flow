@@ -98,6 +98,12 @@ export interface OrderSummary {
   sessionId?: string;
   notes?: string;
   purchaseTracked?: boolean;
+  utmfySent?: {
+    waiting_payment?: boolean;
+    paid?: boolean;
+    refused?: boolean;
+    refunded?: boolean;
+  };
 }
 
 const CHECKOUT_KEY = "asics-checkout-draft";
@@ -182,7 +188,7 @@ function writeOrders(orders: OrderSummary[]) {
   }
 }
 
-export function persistOrder(order: OrderSummary, notify = true) {
+export async function persistOrder(order: OrderSummary, notify = true) {
   const next: OrderSummary = {
     ...order,
     attribution: order.attribution ?? (typeof window === "undefined" ? undefined : getAttribution()),
@@ -190,9 +196,15 @@ export function persistOrder(order: OrderSummary, notify = true) {
     status: order.status ?? (order.pix?.status === "paid" ? "paid" : "pending"),
   };
   saveOrder(next);
-  void import("@/lib/admin-api")
-    .then(({ upsertStoreOrder }) => upsertStoreOrder({ data: { order: next, notify } }))
-    .catch(() => undefined);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      const { upsertStoreOrder } = await import("@/lib/admin-api");
+      await upsertStoreOrder({ data: { order: next, notify } });
+      return next;
+    } catch {
+      if (attempt < 5) await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
   return next;
 }
 
@@ -215,7 +227,7 @@ export function updateOrderPix(pix: OrderPix) {
     pix: { ...order.pix, ...pix },
     status: paid ? "paid" : order.status ?? (pix.status === "unknown" ? "pending" : pix.status),
   };
-  persistOrder(next);
+  void persistOrder(next);
   return next;
 }
 

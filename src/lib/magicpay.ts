@@ -37,6 +37,7 @@ const createPixInput = z.object({
       externalRef: z.string(),
     }),
   ),
+  order: z.custom<import("@/lib/checkout").OrderSummary>().optional(),
 });
 
 function authHeader() {
@@ -167,6 +168,14 @@ export const createMagicPayPix = createServerFn({ method: "POST" })
           ok: false as const,
           error: "A MagicPay não devolveu o QR Code PIX.",
         };
+      }
+      if (data.order) {
+        try {
+          const { commitStoreOrder } = await import("@/lib/admin-api");
+          await commitStoreOrder({ ...data.order, pix, status: data.order.status ?? "pending" }, true);
+        } catch {
+          // PIX já foi gerado; o cliente tenta gravar de novo
+        }
       }
       return { ok: true as const, pix };
     } catch (error) {

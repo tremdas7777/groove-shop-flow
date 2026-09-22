@@ -55,6 +55,7 @@ export interface AdminSettings {
   pixels: PixelSettings;
   utmfy: UtmfySettings;
   hasPin: boolean;
+  settingsAt?: number;
 }
 
 export interface PublicTrackingSettings {
@@ -241,6 +242,33 @@ export function pixelsAreActive(pixels: PixelSettings) {
   );
 }
 
+function filledSecret(value?: string) {
+  return Boolean(value?.trim() && !value.includes("•"));
+}
+
+export function mergePixelLists(left?: PixelSettings | null, right?: PixelSettings | null): PixelSettings {
+  const a = normalizePixels(left);
+  const b = normalizePixels(right);
+  const byId = new Map<string, PixelItem>();
+  for (const item of [...a.items, ...b.items]) {
+    const prev = byId.get(item.id);
+    if (!prev) {
+      byId.set(item.id, item);
+      continue;
+    }
+    byId.set(item.id, {
+      ...prev,
+      ...item,
+      enabled: item.enabled || prev.enabled,
+      pixelId: item.pixelId || prev.pixelId,
+      adsId: item.adsId || prev.adsId,
+      html: item.html || prev.html,
+      accessToken: filledSecret(item.accessToken) ? item.accessToken : prev.accessToken || item.accessToken,
+    });
+  }
+  return syncPixelLegacy({ ...a, ...b, items: [...byId.values()] });
+}
+
 export function maskPixelSettings(pixels: PixelSettings, mask: (value: string) => string): PixelSettings {
   const n = normalizePixels(pixels);
   return {
@@ -255,14 +283,21 @@ export function maskPixelSettings(pixels: PixelSettings, mask: (value: string) =
 
 export function mergePixelSecrets(incoming: PixelSettings, stored: PixelSettings): PixelSettings {
   const next = normalizePixels(incoming);
-  const prevById = Object.fromEntries(normalizePixels(stored).items.map((item) => [item.id, item]));
+  const prev = normalizePixels(stored);
+  if (next.items.length === 0 && prev.items.length > 0) return prev;
+  return mergePixelLists(prev, next);
+}
+
+/** Aplica o que o admin salvou: a lista enviada manda, tokens mascarados ficam os antigos. */
+export function applySavedPixels(incoming: PixelSettings, stored: PixelSettings): PixelSettings {
+  const next = normalizePixels(incoming);
+  const prevById = new Map(normalizePixels(stored).items.map((item) => [item.id, item]));
   const items = next.items.map((item) => {
-    const prev = prevById[item.id];
-    const accessToken =
-      !item.accessToken || item.accessToken.includes("•")
-        ? (prev?.accessToken ?? "")
-        : item.accessToken;
-    return { ...item, accessToken };
+    const old = prevById.get(item.id);
+    return {
+      ...item,
+      accessToken: filledSecret(item.accessToken) ? item.accessToken : old?.accessToken || item.accessToken,
+    };
   });
   return syncPixelLegacy({ ...next, items });
 }
@@ -625,7 +660,7 @@ export function buildLiveSessions(
     const last = trail[trail.length - 1];
     const lastTs = visitor?.lastTs && (!last || visitor.lastTs >= last.ts) ? visitor.lastTs : last?.ts;
     if (!lastTs) continue;
-    if (now - new Date(lastTs).getTime() > RECENT_MS && !visitor) continue;
+    if (now - new Date(lastTs).getTime() > RECENT_MS) continue;
 
     const startedAt = visitor?.startedAt ?? trail[0]?.ts ?? lastTs;
     const path = visitor?.path ?? last?.path ?? "/";
@@ -658,7 +693,7 @@ export function buildLiveSessions(
       lastEvent: visitor?.lastEvent && visitor.lastEvent !== "heartbeat" ? visitor.lastEvent : lastMeaningful.name,
       lastTs,
       startedAt,
-      online: Boolean(visitor) || isOnline(lastTs, now),
+      online: isOnline(lastTs, now),
       stepIndex,
       step: JOURNEY_STEPS[stepIndex],
       events: trail,

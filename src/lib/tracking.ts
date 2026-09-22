@@ -49,7 +49,7 @@ export interface AnalyticsEvent {
 const SESSION_KEY = "asics-session-id";
 const ATTR_KEY = "asics-attribution";
 const EVENTS_KEY = "asics-analytics-events";
-const MAX_LOCAL_EVENTS = 800;
+const MAX_LOCAL_EVENTS = 2000;
 
 export function newId(prefix = "ev") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;

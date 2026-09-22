@@ -16,6 +16,7 @@ import {
   shippingMethods,
   splitCustomerName,
   type CheckoutData,
+  type OrderSummary,
 } from "@/lib/checkout";
 import { createMagicPayPix } from "@/lib/magicpay";
 import {
@@ -23,7 +24,7 @@ import {
   getProduct,
   parsePrice,
 } from "@/lib/products";
-import { track } from "@/lib/tracking";
+import { getAttribution, getSessionId, track } from "@/lib/tracking";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/checkout")({
@@ -205,6 +206,11 @@ function CheckoutPage() {
         };
       });
 
+      const pendingOrder: OrderSummary = {
+        ...order,
+        attribution: getAttribution(),
+        sessionId: getSessionId(),
+      };
       const result = await createMagicPayPix({
         data: {
           orderId,
@@ -226,6 +232,7 @@ function CheckoutPage() {
             complement: checkoutData.complement,
           },
           items: pixItems,
+          order: pendingOrder,
         },
       });
       setPaying(false);
@@ -233,7 +240,7 @@ function CheckoutPage() {
         setPayError(result.error);
         return;
       }
-      persistOrder({ ...order, pix: result.pix });
+      await persistOrder({ ...order, pix: result.pix });
       track("generate_pix", {
         order_id: orderId,
         value: total,
@@ -246,7 +253,7 @@ function CheckoutPage() {
         shipping: checkoutData.shippingMethod,
       });
     } else {
-      persistOrder(order);
+      await persistOrder(order);
     }
 
     void navigate({ to: "/pedido" });

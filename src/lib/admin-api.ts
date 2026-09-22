@@ -3,10 +3,10 @@ import { z } from "zod";
 import {
   defaultSettings,
   emptyUtmfy,
-  mergePixelSecrets,
+  applySavedPixels,
+  mergePixelLists,
   metaCapiTargets,
   normalizePixels,
-  pixelsAreActive,
   publicPixels,
   maskPixelSettings,
   type AdminSettings,
@@ -19,12 +19,15 @@ import {
   customerFirstName,
   customerLastName,
   customerName,
+  emptyCheckout,
   type OrderSummary,
 } from "@/lib/checkout";
 import type { AnalyticsEvent } from "@/lib/tracking";
 
-const MAX_EVENTS = 4000;
-const PRESENCE_TTL_MS = 90_000;
+const MAX_EVENTS = 8000;
+const MAX_ORDERS = 1000;
+const MAX_PRESENCE = 2500;
+const PRESENCE_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
 const STATE_CACHE_URL = "https://asics-admin.internal/state";
 
 interface Session {
@@ -53,6 +56,7 @@ interface PersistedState {
   sessions?: Session[];
   utmfyLast?: Store["utmfyLast"];
   metaLast?: Store["metaLast"];
+  writtenAt?: number;
 }
 
 const globalStore = globalThis as typeof globalThis & { __asicsAdminStore?: Store };
@@ -89,16 +93,17 @@ function statePath() {
 }
 
 function serializeState(): PersistedState {
-  prunePresence();
+  pruneStalePresence();
   return {
     settings: store.settings,
     pinHash: store.pinHash,
     events: store.events.slice(-MAX_EVENTS),
-    orders: store.orders.slice(0, 500),
+    orders: store.orders.slice(0, MAX_ORDERS),
     presence: [...store.presence.values()],
     sessions: store.sessions.filter((session) => session.expiresAt > Date.now()),
     utmfyLast: store.utmfyLast,
     metaLast: store.metaLast,
+    writtenAt: Date.now(),
   };
 }
 
@@ -115,6 +120,73 @@ function mergeUtmfy(disk?: AdminSettings["utmfy"]) {
     pixelId: current.pixelId || incoming.pixelId || UTMIFY_PIXEL_ID,
     apiToken,
     testMode: current.testMode || incoming.testMode,
+  };
+}
+
+function mergeVisitor(prev: PresenceVisitor | undefined, incoming: PresenceVisitor): PresenceVisitor {
+  if (!prev) return incoming;
+  const newer = incoming.lastTs >= prev.lastTs ? incoming : prev;
+  const older = newer === incoming ? prev : incoming;
+  return {
+    ...older,
+    ...newer,
+    startedAt: prev.startedAt || incoming.startedAt,
+    lastTs: newer.lastTs,
+    lastEvent:
+      newer.lastEvent === "heartbeat" && older.lastEvent && older.lastEvent !== "heartbeat"
+        ? older.lastEvent
+        : newer.lastEvent,
+    cartItems: newer.cartItems?.length ? newer.cartItems : older.cartItems,
+    cartValue: newer.cartValue || older.cartValue,
+    email: newer.email || older.email,
+    name: newer.name || older.name,
+    phone: newer.phone || older.phone,
+    city: newer.city || older.city,
+    state: newer.state || older.state,
+    shipping: newer.shipping || older.shipping,
+    attribution: Object.keys(newer.attribution ?? {}).length ? newer.attribution : older.attribution,
+  };
+}
+
+function unionPersisted(left: PersistedState, right: PersistedState): PersistedState {
+  const events = new Map<string, AnalyticsEvent>();
+  for (const event of [...(left.events ?? []), ...(right.events ?? [])]) {
+    if (event?.id) events.set(event.id, event);
+  }
+  const orders = new Map<string, OrderSummary>();
+  for (const order of [...(left.orders ?? []), ...(right.orders ?? [])]) {
+    if (!order?.id) continue;
+    const prev = orders.get(order.id);
+    if (!prev || (order.createdAt ?? "") > (prev.createdAt ?? "") || order.status === "paid") {
+      orders.set(order.id, prev ? { ...prev, ...order } : order);
+    }
+  }
+  const presence = new Map<string, PresenceVisitor>();
+  for (const visitor of [...(left.presence ?? []), ...(right.presence ?? [])]) {
+    if (!visitor?.sessionId) continue;
+    presence.set(visitor.sessionId, mergeVisitor(presence.get(visitor.sessionId), visitor));
+  }
+  const sessions = new Map<string, Session>();
+  for (const session of [...(left.sessions ?? []), ...(right.sessions ?? [])]) {
+    if (session?.token && session.expiresAt > Date.now()) sessions.set(session.token, session);
+  }
+  const leftAt = left.settings?.settingsAt ?? 0;
+  const rightAt = right.settings?.settingsAt ?? 0;
+  const settings = rightAt > leftAt ? right.settings : left.settings ?? right.settings;
+  return {
+    settings,
+    pinHash: left.pinHash || right.pinHash,
+    events: [...events.values()].sort((a, b) => a.ts.localeCompare(b.ts)).slice(-MAX_EVENTS),
+    orders: [...orders.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, MAX_ORDERS),
+    presence: [...presence.values()],
+    sessions: [...sessions.values()],
+    utmfyLast:
+      left.utmfyLast && (!right.utmfyLast || left.utmfyLast.at > right.utmfyLast.at)
+        ? left.utmfyLast
+        : right.utmfyLast,
+    metaLast:
+      left.metaLast && (!right.metaLast || left.metaLast.at > right.metaLast.at) ? left.metaLast : right.metaLast,
+    writtenAt: Math.max(left.writtenAt ?? 0, right.writtenAt ?? 0),
   };
 }
 
@@ -138,19 +210,18 @@ function mergePersisted(data: PersistedState) {
         store.orders.push(order);
         byId.set(order.id, order);
       } else if ((order.createdAt ?? "") > (prev.createdAt ?? "") || order.status === "paid") {
-        Object.assign(prev, order);
+        Object.assign(prev, mergeOrders(prev, order));
       }
     }
     store.orders = store.orders
       .slice()
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 500);
+      .slice(0, MAX_ORDERS);
   }
   if (Array.isArray(data.presence)) {
     for (const visitor of data.presence) {
       if (!visitor?.sessionId) continue;
-      const prev = store.presence.get(visitor.sessionId);
-      if (!prev || visitor.lastTs >= prev.lastTs) store.presence.set(visitor.sessionId, visitor);
+      store.presence.set(visitor.sessionId, mergeVisitor(store.presence.get(visitor.sessionId), visitor));
     }
   }
   if (Array.isArray(data.sessions)) {
@@ -163,13 +234,18 @@ function mergePersisted(data: PersistedState) {
   }
   if (!store.pinHash && data.pinHash) store.pinHash = data.pinHash;
   if (data.settings) {
-    if (!pixelsAreActive(store.settings.pixels) && pixelsAreActive(normalizePixels(data.settings.pixels))) {
+    const storeAt = store.settings.settingsAt ?? 0;
+    const diskAt = data.settings.settingsAt ?? 0;
+    if (diskAt > storeAt) {
       store.settings = {
         ...defaultSettings,
         ...data.settings,
         pixels: normalizePixels(data.settings.pixels),
         utmfy: store.settings.utmfy,
+        settingsAt: diskAt,
       };
+    } else if (diskAt === storeAt) {
+      store.settings.pixels = mergePixelLists(store.settings.pixels, data.settings.pixels);
     }
     mergeUtmfy(data.settings.utmfy);
   }
@@ -182,21 +258,24 @@ function mergePersisted(data: PersistedState) {
 }
 
 async function readPersisted(): Promise<PersistedState | null> {
+  const parts: PersistedState[] = [];
   try {
     const { readFile } = await import("node:fs/promises");
     const raw = await readFile(statePath(), "utf8");
-    return JSON.parse(raw) as PersistedState;
+    parts.push(JSON.parse(raw) as PersistedState);
   } catch {
     // sem arquivo
   }
   try {
     const cache = await caches.open("asics-admin");
     const res = await cache.match(STATE_CACHE_URL);
-    if (res) return (await res.json()) as PersistedState;
+    if (res) parts.push((await res.json()) as PersistedState);
   } catch {
     // sem Cache API
   }
-  return null;
+  if (parts.length === 0) return null;
+  if (parts.length === 1) return parts[0] ?? null;
+  return unionPersisted(parts[0]!, parts[1]!);
 }
 
 async function writePersisted(data: PersistedState) {
@@ -226,21 +305,51 @@ async function writePersisted(data: PersistedState) {
   }
 }
 
+function keepRicherTraffic(next: PersistedState, disk?: PersistedState | null): PersistedState {
+  if (!disk) return next;
+  if (!(next.events?.length) && disk.events?.length) next.events = disk.events;
+  if (!(next.orders?.length) && disk.orders?.length) next.orders = disk.orders;
+  if (!(next.presence?.length) && disk.presence?.length) next.presence = disk.presence;
+  if (!next.pinHash && disk.pinHash) next.pinHash = disk.pinHash;
+  if (!next.sessions?.length && disk.sessions?.length) next.sessions = disk.sessions;
+  return next;
+}
+
 async function persist() {
-  persistChain = persistChain.then(async () => {
-    const disk = await readPersisted();
-    if (disk) mergePersisted(disk);
-    await writePersisted(serializeState());
-  });
+  const writeOnce = async () => {
+    try {
+      const disk = await readPersisted();
+      if (disk) mergePersisted(disk);
+      const next = keepRicherTraffic(serializeState(), disk);
+      const nextItems = normalizePixels(next.settings?.pixels).items;
+      const diskItems = normalizePixels(disk?.settings?.pixels).items;
+      const nextAt = next.settings?.settingsAt ?? 0;
+      const diskAt = disk?.settings?.settingsAt ?? 0;
+      if (nextItems.length === 0 && diskItems.length > 0 && nextAt <= diskAt) {
+        const pixels = normalizePixels(disk?.settings?.pixels);
+        if (next.settings) next.settings.pixels = pixels;
+        store.settings.pixels = pixels;
+      }
+      if (next.events) store.events = next.events;
+      if (next.orders) store.orders = next.orders;
+      if (next.presence) {
+        store.presence = new Map(next.presence.map((visitor) => [visitor.sessionId, visitor]));
+      }
+      await writePersisted(next);
+    } catch {
+      // um isolate falhou: o próximo persist tenta de novo
+    }
+  };
+  persistChain = persistChain.then(writeOnce, writeOnce);
   await persistChain;
 }
 
 async function hydrate() {
-  if (store.loaded) return;
+  const first = !store.loaded;
   store.loaded = true;
   const data = await readPersisted();
   if (data) {
-    if (data.settings) {
+    if (first && data.settings) {
       store.settings = {
         ...defaultSettings,
         ...data.settings,
@@ -284,11 +393,14 @@ function maskSettings(): AdminSettings {
   };
 }
 
-function prunePresence() {
-  const cutoff = Date.now() - PRESENCE_TTL_MS;
+function pruneStalePresence() {
+  const cutoff = Date.now() - PRESENCE_KEEP_MS;
   for (const [id, visitor] of store.presence) {
     if (new Date(visitor.lastTs).getTime() < cutoff) store.presence.delete(id);
   }
+  if (store.presence.size <= MAX_PRESENCE) return;
+  const ranked = [...store.presence.values()].sort((a, b) => b.lastTs.localeCompare(a.lastTs));
+  store.presence = new Map(ranked.slice(0, MAX_PRESENCE).map((visitor) => [visitor.sessionId, visitor]));
 }
 
 function requireSession(token?: string) {
@@ -305,7 +417,14 @@ function utcStamp(iso?: string) {
 
 async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid" | "refused" | "refunded") {
   const token = store.settings.utmfy.apiToken;
-  if (!hasSecret(token)) return;
+  if (!hasSecret(token)) {
+    store.utmfyLast = {
+      at: new Date().toISOString(),
+      ok: false,
+      message: "UTMify sem token no servidor",
+    };
+    return false;
+  }
   const attr = order.attribution ?? {};
   const payload = {
     orderId: order.id,
@@ -348,31 +467,61 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
       userCommissionInCents: Math.round(order.total * 100),
       currency: "BRL" as const,
     },
-    ...(store.settings.utmfy.testMode ? { isTest: true } : {}),
+    isTest: Boolean(store.settings.utmfy.testMode),
   };
 
-  try {
-    const res = await fetch("https://api.utmify.com.br/api-credentials/orders", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-token": token,
-      },
-      body: JSON.stringify(payload),
-    });
-    const body = await res.text();
-    store.utmfyLast = {
-      at: new Date().toISOString(),
-      ok: res.ok,
-      message: res.ok ? `UTMify ${status} · ${order.id}` : body.slice(0, 240) || `HTTP ${res.status}`,
-    };
-  } catch (error) {
-    store.utmfyLast = {
-      at: new Date().toISOString(),
-      ok: false,
-      message: error instanceof Error ? error.message : "Falha ao enviar para a UTMify",
-    };
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const res = await fetch("https://api.utmify.com.br/api-credentials/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-token": token,
+        },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.text();
+      store.utmfyLast = {
+        at: new Date().toISOString(),
+        ok: res.ok,
+        message: res.ok
+          ? `UTMify ${status} · ${order.id}`
+          : body.slice(0, 240) || `HTTP ${res.status}`,
+      };
+      if (res.ok) return true;
+    } catch (error) {
+      store.utmfyLast = {
+        at: new Date().toISOString(),
+        ok: false,
+        message: error instanceof Error ? error.message : "Falha ao enviar para a UTMify",
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
   }
+  return false;
+}
+
+function utmfyStatusOf(order: OrderSummary): "waiting_payment" | "paid" | "refused" | "refunded" {
+  const status = order.status ?? order.pix?.status ?? "pending";
+  if (status === "paid") return "paid";
+  if (status === "refunded") return "refunded";
+  if (status === "refused") return "refused";
+  return "waiting_payment";
+}
+
+async function notifyUtmfy(order: OrderSummary) {
+  const stored = store.orders.find((item) => item.id === order.id);
+  const sent = { ...(stored?.utmfySent ?? order.utmfySent ?? {}) };
+  const mapped = utmfyStatusOf(order);
+
+  if (!sent.waiting_payment) {
+    sent.waiting_payment = await sendUtmfy(order, "waiting_payment");
+  }
+  if (mapped !== "waiting_payment" && sent.waiting_payment && !sent[mapped]) {
+    sent[mapped] = await sendUtmfy(order, mapped);
+  }
+  if (stored) stored.utmfySent = sent;
+  else order.utmfySent = sent;
 }
 
 async function hashUser(value: string) {
@@ -460,18 +609,117 @@ async function sendWebhook(kind: string, payload: unknown) {
   }
 }
 
+function mergeOrders(prev: OrderSummary | undefined, incoming: OrderSummary): OrderSummary {
+  if (!prev) return incoming;
+  const paid =
+    incoming.status === "paid" ||
+    incoming.pix?.status === "paid" ||
+    prev.status === "paid" ||
+    prev.pix?.status === "paid";
+  return {
+    ...prev,
+    ...incoming,
+    data: { ...prev.data, ...incoming.data },
+    items: incoming.items?.length ? incoming.items : prev.items,
+    pix: prev.pix || incoming.pix ? { ...prev.pix, ...incoming.pix } : incoming.pix,
+    attribution: { ...prev.attribution, ...incoming.attribution },
+    sessionId: incoming.sessionId || prev.sessionId,
+    notes: incoming.notes || prev.notes,
+    purchaseTracked: incoming.purchaseTracked || prev.purchaseTracked,
+    utmfySent: { ...prev.utmfySent, ...incoming.utmfySent },
+    status: paid ? "paid" : incoming.status || prev.status,
+  };
+}
+
 function upsertOrderLocal(order: OrderSummary) {
   const index = store.orders.findIndex((item) => item.id === order.id);
-  if (index >= 0) store.orders[index] = { ...store.orders[index], ...order };
+  if (index >= 0) store.orders[index] = mergeOrders(store.orders[index], order);
   else store.orders.unshift(order);
-  store.orders = store.orders.slice(0, 500);
+  store.orders = store.orders.slice(0, MAX_ORDERS);
+}
+
+function orderFromEvent(event: AnalyticsEvent, visitor?: PresenceVisitor): OrderSummary | null {
+  const id = textProp(event.props, "order_id");
+  if (!id) return null;
+  const fromCart = cartFromProps(event.props);
+  const items = (fromCart.cartItems ?? visitor?.cartItems ?? []).map((item) => ({
+    id: item.id,
+    title: item.title,
+    size: item.size,
+    qty: item.qty,
+    price: item.price,
+    photo: item.photo ?? "",
+  }));
+  const total = Number(event.props?.value) || fromCart.cartValue || visitor?.cartValue || 0;
+  const paid = event.name === "purchase";
+  const email = textProp(event.props, "email") || visitor?.email || "";
+  const name = textProp(event.props, "name") || visitor?.name || "";
+  return {
+    id,
+    createdAt: event.ts,
+    data: {
+      ...emptyCheckout,
+      email,
+      name,
+      firstName: name.split(/\s+/)[0] ?? "",
+      lastName: name.split(/\s+/).slice(1).join(" "),
+      phone: textProp(event.props, "phone") || visitor?.phone || "",
+      city: textProp(event.props, "city") || visitor?.city || "",
+      state: textProp(event.props, "state") || visitor?.state || "",
+      shippingMethod: (textProp(event.props, "shipping") || visitor?.shipping || "gratis") as OrderSummary["data"]["shippingMethod"],
+      payment: "pix",
+    },
+    items,
+    subtotal: total,
+    shipping: 0,
+    discount: 0,
+    total,
+    status: paid ? "paid" : "pending",
+    attribution: event.attribution,
+    sessionId: event.sessionId,
+  };
+}
+
+function hydrateOrdersFromEvents() {
+  for (const event of store.events) {
+    if (event.name !== "generate_pix" && event.name !== "purchase") continue;
+    const stub = orderFromEvent(event, store.presence.get(event.sessionId));
+    if (!stub) continue;
+    upsertOrderLocal(stub);
+  }
+}
+
+export async function commitStoreOrder(order: OrderSummary, notify = false) {
+  await hydrate();
+  const prev = store.orders.find((item) => item.id === order.id);
+  upsertOrderLocal(order);
+  await persist();
+  if (!notify) return store.orders.find((item) => item.id === order.id) ?? order;
+  const next = store.orders.find((item) => item.id === order.id) ?? order;
+  try {
+    const nextStatus = next.status ?? next.pix?.status ?? "pending";
+    const prevStatus = prev?.status ?? prev?.pix?.status;
+    await notifyUtmfy(next);
+    if (!prev) {
+      if (nextStatus === "paid") await sendMetaCapi(next, "Purchase");
+      else await sendMetaCapi(next, "AddPaymentInfo");
+      await sendWebhook("order.created", next);
+    } else if (prevStatus !== nextStatus) {
+      if (nextStatus === "paid") await sendMetaCapi(next, "Purchase");
+      await sendWebhook("order.updated", next);
+    }
+  } catch {
+    // pedido já está salvo; UTMify/CAPI não pode apagar
+  }
+  return next;
 }
 
 function snapshot(): AdminSnapshot {
-  prunePresence();
+  pruneStalePresence();
+  hydrateOrdersFromEvents();
   return {
     settings: maskSettings(),
-    events: store.events.slice(-2000),
+    events: store.events.slice(-MAX_EVENTS),
     orders: store.orders,
     visitors: [...store.presence.values()].sort((a, b) => b.lastTs.localeCompare(a.lastTs)),
     utmfyLast: store.utmfyLast,
@@ -592,26 +840,33 @@ export const ingestStoreEvent = createServerFn({ method: "POST" })
     const prev = store.presence.get(incoming.sessionId);
     const fromProps = cartFromProps(incoming.props);
     store.events = [...store.events.filter((event) => event.id !== incoming.id), incoming].slice(-MAX_EVENTS);
-    store.presence.set(incoming.sessionId, {
-      sessionId: incoming.sessionId,
-      path: incoming.path,
-      title: incoming.title,
-      device,
-      attribution: incoming.attribution ?? {},
-      lastEvent: incoming.name,
-      lastTs: incoming.ts,
-      startedAt: prev?.startedAt ?? incoming.ts,
-      ...keepCartFields(prev, {
-        cartItems: fromProps.cartItems,
-        cartValue: fromProps.cartValue,
-        email: textProp(incoming.props, "email"),
-        name: textProp(incoming.props, "name"),
-        phone: textProp(incoming.props, "phone"),
-        city: textProp(incoming.props, "city"),
-        state: textProp(incoming.props, "state"),
-        shipping: textProp(incoming.props, "shipping"),
+    store.presence.set(
+      incoming.sessionId,
+      mergeVisitor(prev, {
+        sessionId: incoming.sessionId,
+        path: incoming.path,
+        title: incoming.title,
+        device,
+        attribution: incoming.attribution ?? {},
+        lastEvent: incoming.name,
+        lastTs: incoming.ts,
+        startedAt: prev?.startedAt ?? incoming.ts,
+        ...keepCartFields(prev, {
+          cartItems: fromProps.cartItems,
+          cartValue: fromProps.cartValue,
+          email: textProp(incoming.props, "email"),
+          name: textProp(incoming.props, "name"),
+          phone: textProp(incoming.props, "phone"),
+          city: textProp(incoming.props, "city"),
+          state: textProp(incoming.props, "state"),
+          shipping: textProp(incoming.props, "shipping"),
+        }),
       }),
-    });
+    );
+    if (incoming.name === "generate_pix" || incoming.name === "purchase") {
+      const stub = orderFromEvent(incoming, store.presence.get(incoming.sessionId));
+      if (stub) upsertOrderLocal(stub);
+    }
     await persist();
     return { ok: true };
   });
@@ -627,26 +882,29 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
         ? prev.lastEvent
         : data.lastEvent;
     const device = data.device === "desktop" || data.device === "tablet" ? data.device : "mobile";
-    store.presence.set(data.sessionId, {
-      sessionId: data.sessionId,
-      path: data.path,
-      title: data.title,
-      device,
-      attribution: data.attribution ?? {},
-      lastEvent,
-      lastTs: new Date().toISOString(),
-      startedAt: prev?.startedAt ?? new Date().toISOString(),
-      ...keepCartFields(prev, {
-        cartItems: data.cartItems,
-        cartValue: data.cartValue,
-        email: data.email,
-        name: data.name,
-        phone: data.phone,
-        city: data.city,
-        state: data.state,
-        shipping: data.shipping,
+    store.presence.set(
+      data.sessionId,
+      mergeVisitor(prev, {
+        sessionId: data.sessionId,
+        path: data.path,
+        title: data.title,
+        device,
+        attribution: data.attribution ?? {},
+        lastEvent,
+        lastTs: new Date().toISOString(),
+        startedAt: prev?.startedAt ?? new Date().toISOString(),
+        ...keepCartFields(prev, {
+          cartItems: data.cartItems,
+          cartValue: data.cartValue,
+          email: data.email,
+          name: data.name,
+          phone: data.phone,
+          city: data.city,
+          state: data.state,
+          shipping: data.shipping,
+        }),
       }),
-    });
+    );
     await persist();
     return { ok: true };
   });
@@ -654,32 +912,7 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
 export const upsertStoreOrder = createServerFn({ method: "POST" })
   .validator(z.object({ order: orderSchema, notify: z.boolean().optional() }))
   .handler(async ({ data }) => {
-    await hydrate();
-    const prev = store.orders.find((item) => item.id === data.order.id);
-    upsertOrderLocal(data.order);
-    if (data.notify !== false) {
-      const nextStatus = data.order.status ?? data.order.pix?.status ?? "pending";
-      const prevStatus = prev?.status ?? prev?.pix?.status;
-      if (!prev) {
-        await sendUtmfy(data.order, nextStatus === "paid" ? "paid" : "waiting_payment");
-        if (nextStatus === "paid") await sendMetaCapi(data.order, "Purchase");
-        else await sendMetaCapi(data.order, "AddPaymentInfo");
-        await sendWebhook("order.created", data.order);
-      } else if (prevStatus !== nextStatus) {
-        const mapped =
-          nextStatus === "paid"
-            ? "paid"
-            : nextStatus === "refunded"
-              ? "refunded"
-              : nextStatus === "refused"
-                ? "refused"
-                : "waiting_payment";
-        await sendUtmfy(data.order, mapped);
-        if (nextStatus === "paid") await sendMetaCapi(data.order, "Purchase");
-        await sendWebhook("order.updated", data.order);
-      }
-    }
-    await persist();
+    await commitStoreOrder(data.order, data.notify !== false);
     return { ok: true };
   });
 
@@ -750,7 +983,7 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
       ...store.settings,
       storeName: data.settings.storeName,
       webhookUrl: data.settings.webhookUrl,
-      pixels: mergePixelSecrets(data.settings.pixels, store.settings.pixels),
+      pixels: applySavedPixels(data.settings.pixels, store.settings.pixels),
       utmfy: {
         ...data.settings.utmfy,
         apiToken: keepToken,
@@ -758,6 +991,7 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
         enabled: data.settings.utmfy.enabled || hasSecret(keepToken),
       },
       hasPin: Boolean(store.pinHash),
+      settingsAt: Date.now(),
     };
     await persist();
     return maskSettings();
@@ -793,15 +1027,7 @@ export const updateAdminOrder = createServerFn({ method: "POST" })
       if (order.pix) order.pix = { ...order.pix, status: data.status === "pending" ? "pending" : data.status };
     }
     if (data.notes !== undefined) order.notes = data.notes;
-    const mapped =
-      order.status === "paid"
-        ? "paid"
-        : order.status === "refunded"
-          ? "refunded"
-          : order.status === "refused"
-            ? "refused"
-            : "waiting_payment";
-    await sendUtmfy(order, mapped);
+    await notifyUtmfy(order);
     if (order.status === "paid") await sendMetaCapi(order, "Purchase");
     await sendWebhook("order.updated", order);
     await persist();

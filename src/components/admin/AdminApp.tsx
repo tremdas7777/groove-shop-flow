@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   BarChart3,
@@ -46,6 +46,7 @@ import {
   buildLiveSessions,
   defaultSettings,
   inPeriod,
+  listPixelItems,
   mergePixelSecrets,
   money,
   newPixelItem,
@@ -62,7 +63,7 @@ import {
   type PixelKind,
 } from "@/lib/admin";
 import { loadLocalEvents } from "@/lib/tracking";
-import { customerName, loadOrders, type OrderSummary } from "@/lib/checkout";
+import { customerName, emptyCheckout, loadOrders, type OrderSummary } from "@/lib/checkout";
 import { formatBRL, products } from "@/lib/products";
 import { cn } from "@/lib/utils";
 import {
@@ -114,6 +115,8 @@ export function AdminApp() {
   const [period, setPeriod] = useState<Period>("7d");
   const [snap, setSnap] = useState<AdminSnapshot | null>(null);
   const [settings, setSettings] = useState<AdminSettings>(defaultSettings);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   useEffect(() => {
     const saved = sessionStorage.getItem(TOKEN_KEY);
@@ -138,15 +141,28 @@ export function AdminApp() {
         orders: [],
         visitors: [],
       });
-      if (!cancelled) setSnap(local);
+      if (!cancelled) setSnap((prev) => prev ?? local);
+      if (token.startsWith("local_")) return;
       try {
         const next = await getAdminSnapshot({ data: { token } });
         if (cancelled) return;
         setSnap(mergeLocal(next));
-        if (!settingsLoaded) {
-          settingsLoaded = true;
-          setSettings((prev) => keepTypedSecrets(prev, next.settings));
-        }
+        const mergedSettings = keepTypedSecrets(loadLocalSettings(), next.settings);
+        setSettings((prev) => {
+          const prevCount = listPixelItems(prev.pixels).length;
+          const nextCount = listPixelItems(mergedSettings.pixels).length;
+          if (!settingsLoaded) {
+            settingsLoaded = true;
+            const merged = keepTypedSecrets(prev, mergedSettings);
+            saveLocalSettings(merged);
+            return merged;
+          }
+          if (prevCount === 0 && nextCount > 0) {
+            saveLocalSettings({ ...prev, pixels: mergedSettings.pixels });
+            return { ...prev, pixels: mergedSettings.pixels };
+          }
+          return prev;
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         if (message.toLowerCase().includes("sessão") || message.toLowerCase().includes("expirada")) {
@@ -355,7 +371,7 @@ export function AdminApp() {
             {tab === "live" && <LiveView visitors={visitors} events={events} orders={orders} />}
             {tab === "pedidos" && (
               <OrdersPanel
-                orders={scopedOrders}
+                orders={orders}
                 token={token}
                 onChange={(next) => setSnap((prev) => (prev ? { ...prev, orders: prev.orders.map((o) => (o.id === next.id ? next : o)) } : prev))}
               />
@@ -371,8 +387,11 @@ export function AdminApp() {
                 settings={settings}
                 last={snap?.metaLast}
                 token={token}
-                onChange={setSettings}
-                onSave={() => void saveSettings(token, settings, setSettings)}
+                onChange={(next) => {
+                  saveLocalSettings(next);
+                  setSettings(next);
+                }}
+                onSave={() => void saveSettings(token, settingsRef.current, setSettings)}
               />
             )}
             {tab === "utmify" && (
@@ -380,7 +399,7 @@ export function AdminApp() {
                 settings={settings}
                 last={snap?.utmfyLast}
                 onChange={setSettings}
-                onSave={() => void saveSettings(token, settings, setSettings)}
+                onSave={() => void saveSettings(token, settingsRef.current, setSettings)}
                 onTest={async () => {
                   try {
                     const result = await testUtmifyConnection({ data: { token } });
@@ -396,7 +415,7 @@ export function AdminApp() {
                 settings={settings}
                 token={token}
                 onChange={setSettings}
-                onSave={() => void saveSettings(token, settings, setSettings)}
+                onSave={() => void saveSettings(token, settingsRef.current, setSettings)}
                 onSeed={() => {
                   seedLocalDemo();
                   setSnap(
@@ -442,20 +461,60 @@ function keepTypedSecrets(prev: AdminSettings, incoming: AdminSettings): AdminSe
 function mergeLocal(snap: AdminSnapshot): AdminSnapshot {
   const localEvents = loadLocalEvents();
   const localOrders = loadOrders();
-  const localVisitors = loadLocalPresence();
+  const localVisitors = loadLocalPresence(true);
   const events = [...snap.events];
   for (const event of localEvents) {
     if (!events.some((item) => item.id === event.id)) events.push(event);
-  }
-  const orders = [...snap.orders];
-  for (const order of localOrders) {
-    if (!orders.some((item) => item.id === order.id)) orders.push(order);
   }
   const visitors = [...snap.visitors];
   for (const visitor of localVisitors) {
     const index = visitors.findIndex((item) => item.sessionId === visitor.sessionId);
     if (index === -1) visitors.push(visitor);
     else if (visitors[index] && visitor.lastTs > visitors[index].lastTs) visitors[index] = visitor;
+  }
+  const orders = [...snap.orders];
+  for (const order of localOrders) {
+    if (!orders.some((item) => item.id === order.id)) orders.push(order);
+  }
+  for (const event of events) {
+    if (event.name !== "generate_pix" && event.name !== "purchase") continue;
+    const id = typeof event.props?.order_id === "string" ? event.props.order_id : "";
+    if (!id || orders.some((item) => item.id === id)) continue;
+    const visitor = visitors.find((item) => item.sessionId === event.sessionId);
+    const rawItems = Array.isArray(event.props?.cart_items) ? event.props.cart_items : visitor?.cartItems ?? [];
+    const items = (rawItems as { id?: number; title?: string; size?: string; qty?: number; price?: number; photo?: string }[]).map((item) => ({
+      id: Number(item.id) || 0,
+      title: String(item.title ?? "Produto"),
+      size: item.size,
+      qty: Number(item.qty) || 1,
+      price: Number(item.price) || 0,
+      photo: item.photo ?? "",
+    }));
+    const name = String(event.props?.name ?? visitor?.name ?? "");
+    orders.push({
+      id,
+      createdAt: event.ts,
+      data: {
+        ...emptyCheckout,
+        email: String(event.props?.email ?? visitor?.email ?? ""),
+        name,
+        firstName: name.split(/\s+/)[0] ?? "",
+        lastName: name.split(/\s+/).slice(1).join(" "),
+        phone: String(event.props?.phone ?? visitor?.phone ?? ""),
+        city: String(event.props?.city ?? visitor?.city ?? ""),
+        state: String(event.props?.state ?? visitor?.state ?? ""),
+        shippingMethod: (String(event.props?.shipping ?? visitor?.shipping ?? "gratis") as OrderSummary["data"]["shippingMethod"]),
+        payment: "pix",
+      },
+      items,
+      subtotal: Number(event.props?.value) || visitor?.cartValue || 0,
+      shipping: 0,
+      discount: 0,
+      total: Number(event.props?.value) || visitor?.cartValue || 0,
+      status: event.name === "purchase" ? "paid" : "pending",
+      attribution: event.attribution,
+      sessionId: event.sessionId,
+    });
   }
   events.sort((a, b) => a.ts.localeCompare(b.ts));
   orders.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -622,7 +681,9 @@ function OrdersPanel({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-xl font-semibold">Pedidos</h2>
-          <p className="text-sm text-white/50">{orders.length} no total</p>
+          <p className="text-sm text-white/50">
+            {orders.length} no total · PIX gerado e pago ficam gravados no servidor
+          </p>
         </div>
         <div className="flex gap-2">
           <input

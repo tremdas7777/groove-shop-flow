@@ -77,18 +77,18 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   head: () => ({
     meta: [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "ASICS Outlet — Tênis com até 50% OFF" },
+      { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
+      { title: "ASICS Brasil — Tênis de corrida, treino e lifestyle" },
       {
         name: "description",
         content:
-          "Tênis ASICS masculinos, femininos e unissex com descontos de até 50%. Frete rápido e compra segura.",
+          "Tênis ASICS masculinos, femininos e unissex. Mais velocidade, energia e conforto para movimentar corpo e mente.",
       },
-      { property: "og:title", content: "ASICS Outlet — Tênis com até 50% OFF" },
+      { property: "og:title", content: "ASICS Brasil" },
       {
         property: "og:description",
         content:
-          "Tênis ASICS masculinos, femininos e unissex com descontos de até 50%.",
+          "Tênis ASICS masculinos, femininos e unissex. Frete para todo o Brasil.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -98,7 +98,20 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: appCss,
       },
-      { rel: "icon", href: "/favicon.png", type: "image/png" },
+      {
+        rel: "preconnect",
+        href: "https://fonts.googleapis.com",
+      },
+      {
+        rel: "preconnect",
+        href: "https://fonts.gstatic.com",
+        crossOrigin: "anonymous",
+      },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Albert+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap",
+      },
+      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
     ],
   }),
   shellComponent: RootShell,

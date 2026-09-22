@@ -1,144 +1,209 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Minus, Plus, Trash2, ShoppingBag } from "lucide-react";
-import { formatBRL, getProduct } from "@/lib/products";
-import { useCart } from "@/lib/cart";
-import { Header } from "@/components/Header";
+import { Minus, Plus, Trash2 } from "lucide-react";
+import { CheckoutShell } from "@/components/CheckoutShell";
+import { ProductCard } from "@/components/ProductCard";
+import { cartLineKey, useCart } from "@/lib/cart";
+import { formatBRL, getProduct, parsePrice, products } from "@/lib/products";
 
 export const Route = createFileRoute("/carrinho")({
   head: () => ({
     meta: [
-      { title: "Carrinho — ASICS Outlet" },
-      { name: "description", content: "Revise os itens do seu carrinho." },
-      { property: "og:title", content: "Carrinho — ASICS Outlet" },
-      { property: "og:description", content: "Revise os itens do seu carrinho." },
+      { title: "Minha Sacola — ASICS Brasil" },
+      { name: "description", content: "Revise os itens da sua sacola ASICS." },
+      { property: "og:title", content: "Minha Sacola — ASICS Brasil" },
     ],
   }),
   component: CartPage,
 });
 
 function CartPage() {
-  const { items, setQty, remove, clear } = useCart();
+  const { items, setQty, remove } = useCart();
 
   const detailed = items
     .map((i) => ({ item: i, product: getProduct(i.id) }))
     .filter((d) => d.product);
 
-  const total = detailed.reduce(
-    (acc, d) => acc + parseFloat(d.product!.preco) * d.item.qty,
+  const subtotal = detailed.reduce(
+    (acc, d) => acc + parsePrice(d.product!.preco) * d.item.qty,
     0,
   );
+  const compare = detailed.reduce(
+    (acc, d) =>
+      acc +
+      Math.max(parsePrice(d.product!.preco_comparacao), parsePrice(d.product!.preco)) *
+        d.item.qty,
+    0,
+  );
+  const discount = Math.max(0, compare - subtotal);
+
+  const recommended = products.slice(0, 8);
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
-      <main className="mx-auto max-w-3xl px-4 py-8">
-        <h1 className="text-2xl font-extrabold tracking-tight text-foreground">
-          Seu carrinho
-        </h1>
+    <CheckoutShell>
+      <h1 className="text-[22px] font-bold text-[#222] sm:text-[28px]">
+        Minha Sacola
+      </h1>
 
-        {detailed.length === 0 ? (
-          <div className="mt-12 flex flex-col items-center text-center">
-            <ShoppingBag className="h-12 w-12 text-muted-foreground" />
-            <p className="mt-4 text-muted-foreground">
-              Seu carrinho está vazio.
-            </p>
-            <Link
-              to="/"
-              className="mt-4 inline-flex rounded-full bg-primary px-6 py-3 text-sm font-bold text-primary-foreground hover:opacity-90"
-            >
-              Ver ofertas
-            </Link>
+      {detailed.length === 0 ? (
+        <div className="flex flex-col items-center px-4 py-16 text-center">
+          <svg
+            width="72"
+            height="48"
+            viewBox="0 0 72 48"
+            fill="none"
+            className="text-primary"
+            aria-hidden
+          >
+            <path
+              d="M10 34c6-2 12 1 18 1s14-4 22-2c6 1 12 4 16 3"
+              stroke="currentColor"
+              strokeWidth="1.6"
+            />
+            <path
+              d="M14 30c1-8 5-14 14-16 10-2 16 2 22 1 6-1 10-5 16-4"
+              stroke="currentColor"
+              strokeWidth="1.6"
+            />
+            <path
+              d="M20 22c4-1 8 2 14 1M28 18c3 .2 6 2 10 1"
+              stroke="currentColor"
+              strokeWidth="1.6"
+            />
+            <circle cx="22" cy="36" r="5" stroke="currentColor" strokeWidth="1.6" />
+            <circle cx="54" cy="36" r="5" stroke="currentColor" strokeWidth="1.6" />
+          </svg>
+          <h2 className="mt-6 text-[22px] font-semibold text-primary">
+            Sua sacola está vazia
+          </h2>
+          <p className="mt-2 max-w-sm text-[14px] text-[#333]">
+            Descubra tênis, roupas e acessórios para elevar o seu desempenho.
+          </p>
+          <Link
+            to="/"
+            className="mt-6 inline-flex rounded-full bg-primary px-8 py-3 text-[14px] font-semibold text-white"
+          >
+            Explorar produtos
+          </Link>
+
+          <div className="mt-16 w-full text-left">
+            <h3 className="text-[20px] font-semibold text-primary">
+              Produtos recomendados
+            </h3>
+            <div className="mt-6 grid grid-cols-2 gap-x-4 gap-y-8 sm:grid-cols-4">
+              {recommended.slice(0, 4).map((p) => (
+                <ProductCard key={p.id} product={p} />
+              ))}
+            </div>
           </div>
-        ) : (
-          <>
-            <ul className="mt-6 space-y-4">
-              {detailed.map(({ item, product }) => (
-                <li
-                  key={item.id}
-                  className="flex gap-4 rounded-xl border border-border bg-card p-3"
+        </div>
+      ) : (
+        <div className="mt-6 grid gap-8 sm:mt-8 lg:grid-cols-[1fr_340px] lg:gap-10">
+          <ul className="divide-y divide-border border-y border-border">
+            {detailed.map(({ item, product }) => (
+              <li
+                key={cartLineKey(item)}
+                className="flex gap-3 py-4 sm:gap-4 sm:py-5"
+              >
+                <Link
+                  to="/produto/$id"
+                  params={{ id: String(product!.id) }}
+                  className="h-20 w-20 shrink-0 bg-[#f4f4f4] sm:h-[104px] sm:w-[104px]"
                 >
+                  <img
+                    src={product!.fotos[0]}
+                    alt={product!.titulo}
+                    className="h-full w-full object-contain"
+                  />
+                </Link>
+                <div className="flex min-w-0 flex-1 flex-col">
                   <Link
                     to="/produto/$id"
                     params={{ id: String(product!.id) }}
-                    className="h-24 w-24 shrink-0 overflow-hidden rounded-lg bg-muted"
+                    className="line-clamp-2 text-[13px] font-medium text-[#222] hover:underline sm:text-[14px]"
                   >
-                    <img
-                      src={product!.fotos[0]}
-                      alt={product!.titulo}
-                      className="h-full w-full object-cover"
-                    />
+                    {product!.titulo}
                   </Link>
-                  <div className="flex flex-1 flex-col">
-                    <Link
-                      to="/produto/$id"
-                      params={{ id: String(product!.id) }}
-                      className="line-clamp-2 text-sm font-medium text-foreground hover:underline"
-                    >
-                      {product!.titulo}
-                    </Link>
-                    <span className="mt-1 text-base font-bold text-foreground">
-                      {formatBRL(product!.preco)}
-                    </span>
-                    <div className="mt-auto flex items-center justify-between pt-2">
-                      <div className="inline-flex items-center rounded-full border border-border">
-                        <button
-                          onClick={() => setQty(item.id, item.qty - 1)}
-                          className="p-2 text-muted-foreground hover:text-foreground"
-                          aria-label="Diminuir quantidade"
-                        >
-                          <Minus className="h-3 w-3" />
-                        </button>
-                        <span className="w-8 text-center text-sm font-medium text-foreground">
-                          {item.qty}
-                        </span>
-                        <button
-                          onClick={() => setQty(item.id, item.qty + 1)}
-                          className="p-2 text-muted-foreground hover:text-foreground"
-                          aria-label="Aumentar quantidade"
-                        >
-                          <Plus className="h-3 w-3" />
-                        </button>
-                      </div>
+                  {item.size && (
+                    <p className="mt-1 text-[13px] text-muted-foreground">
+                      Tamanho: {item.size}
+                    </p>
+                  )}
+                  <p className="mt-2 text-[15px] font-semibold">
+                    {formatBRL(product!.preco)}
+                  </p>
+                  <div className="mt-auto flex items-center justify-between pt-3">
+                    <div className="inline-flex items-center rounded-full bg-[#f3f3f3]">
                       <button
-                        onClick={() => remove(item.id)}
-                        className="p-2 text-muted-foreground hover:text-destructive"
-                        aria-label="Remover item"
+                        type="button"
+                        onClick={() => setQty(item.id, item.qty - 1, item.size)}
+                        className="flex h-11 w-11 items-center justify-center text-primary"
+                        aria-label="Diminuir quantidade"
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Minus className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="w-8 text-center text-sm font-medium">
+                        {item.qty}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setQty(item.id, item.qty + 1, item.size)}
+                        className="flex h-11 w-11 items-center justify-center text-primary"
+                        aria-label="Aumentar quantidade"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => remove(item.id, item.size)}
+                      className="flex h-11 w-11 items-center justify-center text-muted-foreground hover:text-destructive"
+                      aria-label="Remover item"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
-                </li>
-              ))}
-            </ul>
+                </div>
+              </li>
+            ))}
+          </ul>
 
-            <div className="mt-6 rounded-xl border border-border bg-card p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">Total</span>
-                <span className="text-xl font-extrabold text-foreground">
-                  {formatBRL(total)}
-                </span>
+          <aside className="h-fit border border-[#e4e5f3] p-5">
+            <h2 className="text-[16px] font-semibold">Resumo do pedido</h2>
+            <dl className="mt-4 space-y-2 text-[14px]">
+              <div className="flex justify-between">
+                <dt className="text-muted-foreground">Subtotal</dt>
+                <dd>{formatBRL(subtotal + discount)}</dd>
               </div>
-              <button
-                className="mt-4 w-full rounded-full bg-primary px-6 py-3 text-sm font-bold text-primary-foreground transition-opacity hover:opacity-90"
-                onClick={() =>
-                  alert(
-                    "Checkout em breve! Esta é uma demonstração da vitrine.",
-                  )
-                }
-              >
-                Finalizar compra
-              </button>
-              <button
-                onClick={clear}
-                className="mt-2 w-full text-center text-xs text-muted-foreground hover:text-foreground"
-              >
-                Limpar carrinho
-              </button>
-            </div>
-          </>
-        )}
-      </main>
-    </div>
+              {discount > 0 && (
+                <div className="flex justify-between text-primary">
+                  <dt>Descontos</dt>
+                  <dd>-{formatBRL(discount)}</dd>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <dt className="text-muted-foreground">Frete</dt>
+                <dd>Grátis, padrão ou expresso</dd>
+              </div>
+              <div className="flex justify-between border-t border-border pt-3 text-[16px] font-semibold">
+                <dt>Total</dt>
+                <dd>{formatBRL(subtotal)}</dd>
+              </div>
+            </dl>
+            <Link
+              to="/checkout"
+              className="mt-5 flex h-12 items-center justify-center rounded-full bg-primary text-[14px] font-semibold text-white"
+            >
+              Finalizar compra
+            </Link>
+            <Link
+              to="/"
+              className="mt-3 flex h-10 items-center justify-center text-[13px] text-primary underline underline-offset-2"
+            >
+              Escolher produtos
+            </Link>
+          </aside>
+        </div>
+      )}
+    </CheckoutShell>
   );
 }

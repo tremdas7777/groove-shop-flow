@@ -1,9 +1,17 @@
-import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+import { createFileRoute, Link, notFound, useNavigate } from "@tanstack/react-router";
+import { Heart, Ruler, Share2, Truck } from "lucide-react";
 import { useState } from "react";
-import { ShoppingCart, Star, Truck, ShieldCheck, ChevronLeft } from "lucide-react";
-import { formatBRL, getProduct, products } from "@/lib/products";
+import { ProductCard } from "@/components/ProductCard";
+import { StoreLayout } from "@/components/StoreLayout";
 import { useCart } from "@/lib/cart";
-import { Header } from "@/components/Header";
+import {
+  formatBRL,
+  getProduct,
+  getSizes,
+  installmentOf,
+  parsePrice,
+  products,
+} from "@/lib/products";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/produto/$id")({
@@ -15,7 +23,7 @@ export const Route = createFileRoute("/produto/$id")({
   head: ({ loaderData }) => ({
     meta: loaderData
       ? [
-          { title: `${loaderData.product.titulo} — ASICS Outlet` },
+          { title: `${loaderData.product.titulo} — ASICS Brasil` },
           {
             name: "description",
             content: loaderData.product.descricao.slice(0, 155),
@@ -23,14 +31,14 @@ export const Route = createFileRoute("/produto/$id")({
           { property: "og:title", content: loaderData.product.titulo },
           {
             property: "og:description",
-            content: `${formatBRL(loaderData.product.preco)} — ASICS Outlet`,
+            content: `${formatBRL(loaderData.product.preco)} — ASICS Brasil`,
           },
           { property: "og:type", content: "product" },
           { property: "og:image", content: loaderData.product.fotos[0] },
           { name: "twitter:card", content: "summary_large_image" },
           { name: "twitter:image", content: loaderData.product.fotos[0] },
         ]
-      : [{ title: "Produto não encontrado — ASICS Outlet" }],
+      : [{ title: "Produto não encontrado — ASICS Brasil" }],
   }),
   component: ProductPage,
 });
@@ -38,169 +46,253 @@ export const Route = createFileRoute("/produto/$id")({
 function ProductPage() {
   const { product } = Route.useLoaderData();
   const { add } = useCart();
+  const navigate = useNavigate();
   const [foto, setFoto] = useState(0);
+  const [size, setSize] = useState<string>("");
   const [added, setAdded] = useState(false);
+  const [sizeError, setSizeError] = useState(false);
+  const [tab, setTab] = useState<"sobre" | "tecnologias" | "cuidados">("sobre");
+
+  const sizes = getSizes(product);
+  const price = parsePrice(product.preco);
+  const compare = parsePrice(product.preco_comparacao);
+  const off = parseFloat(product.desconto);
 
   const relacionados = products
     .filter((p) => p.categoria === product.categoria && p.id !== product.id)
     .slice(0, 4);
 
   const handleAdd = () => {
-    add(product.id);
+    if (sizes.length && !size) {
+      setSizeError(true);
+      return;
+    }
+    add(product.id, 1, size || undefined);
     setAdded(true);
-    window.setTimeout(() => setAdded(false), 1500);
+    window.setTimeout(() => setAdded(false), 1600);
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
-      <main className="mx-auto max-w-6xl px-4 py-6">
-        <Link
-          to="/"
-          className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="h-4 w-4" /> Voltar à loja
-        </Link>
+    <StoreLayout>
+      <main className="mx-auto max-w-[1280px] px-4 py-4 pb-28 lg:py-10 lg:pb-10">
+        <p className="truncate text-[12px] text-muted-foreground">
+          <Link to="/" className="hover:text-primary">
+            ASICS Brasil
+          </Link>
+          {" / "}
+          <span>{product.categoria}</span>
+          {" / "}
+          <span className="text-foreground">{product.titulo}</span>
+        </p>
 
-        <div className="grid gap-8 md:grid-cols-2">
-          {/* Galeria */}
+        <div className="mt-4 grid gap-8 lg:mt-6 lg:grid-cols-2 lg:gap-10">
           <div>
-            <div className="aspect-square overflow-hidden rounded-xl border border-border bg-muted">
+            <div className="relative aspect-square overflow-hidden bg-[#f4f4f4]">
               <img
                 src={product.fotos[foto]}
                 alt={product.titulo}
-                className="h-full w-full object-cover"
+                className="h-full w-full object-contain"
               />
+              {off > 0 && (
+                <span className="absolute left-3 top-3 rounded-full bg-sale px-3 py-1 text-[12px] font-semibold text-white">
+                  -{Math.round(off)}%
+                </span>
+              )}
             </div>
             {product.fotos.length > 1 && (
-              <div className="mt-3 flex gap-2 overflow-x-auto">
+              <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
                 {product.fotos.map((f, i) => (
                   <button
                     key={f}
+                    type="button"
                     onClick={() => setFoto(i)}
                     className={cn(
-                      "h-16 w-16 shrink-0 overflow-hidden rounded-lg border-2",
-                      i === foto ? "border-primary" : "border-border",
+                      "h-16 w-16 shrink-0 overflow-hidden border bg-[#f4f4f4] sm:h-[72px] sm:w-[72px]",
+                      i === foto ? "border-primary" : "border-transparent",
                     )}
                     aria-label={`Foto ${i + 1}`}
                   >
-                    <img src={f} alt="" className="h-full w-full object-cover" />
+                    <img src={f} alt="" className="h-full w-full object-contain" />
                   </button>
                 ))}
               </div>
             )}
           </div>
 
-          {/* Info */}
           <div>
-            <span className="text-xs font-bold uppercase tracking-widest text-primary">
-              {product.categoria}
-            </span>
-            <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-foreground sm:text-3xl">
-              {product.titulo}
-            </h1>
-            <div className="mt-2 flex items-center gap-1 text-sm text-muted-foreground">
-              <Star className="h-4 w-4 fill-primary text-primary" />
-              {product.notas} · Mais de 1.000 avaliações
+            <div className="flex items-start justify-between gap-4">
+              <h1 className="text-[22px] font-semibold leading-snug text-[#222] sm:text-[26px]">
+                {product.titulo}
+              </h1>
+              <div className="-mr-2 flex shrink-0 text-primary">
+                <button
+                  type="button"
+                  aria-label="Adicionar aos favoritos"
+                  className="flex h-11 w-11 items-center justify-center"
+                >
+                  <Heart className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Compartilhar este produto"
+                  className="flex h-11 w-11 items-center justify-center"
+                >
+                  <Share2 className="h-5 w-5" />
+                </button>
+              </div>
             </div>
 
-            <div className="mt-4 rounded-xl border border-border bg-card p-4">
-              {parseFloat(product.preco_comparacao) >
-                parseFloat(product.preco) && (
-                <span className="text-sm text-muted-foreground line-through">
-                  {formatBRL(product.preco_comparacao)}
+            <div className="mt-4 flex flex-wrap items-baseline gap-2">
+              {compare > price && (
+                <span className="text-[15px] text-muted-foreground line-through">
+                  {formatBRL(compare)}
                 </span>
               )}
-              <div className="flex items-end gap-2">
-                <span className="text-3xl font-extrabold text-foreground">
-                  {formatBRL(product.preco)}
-                </span>
-                {parseFloat(product.desconto) > 0 && (
-                  <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-bold text-destructive-foreground">
-                    -{Math.round(parseFloat(product.desconto))}%
+              <span className="text-[22px] font-semibold text-[#222]">
+                {formatBRL(price)}
+              </span>
+            </div>
+            <p className="mt-1 text-[13px] text-muted-foreground">
+              ou em até 10x de {installmentOf(price)}
+            </p>
+
+            {sizes.length > 0 && (
+              <div className="mt-8">
+                <div className="flex items-center justify-between">
+                  <p className="text-[14px] font-semibold">Tamanho</p>
+                  <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground">
+                    <Ruler className="h-3.5 w-3.5" />
+                    Guia de medidas
                   </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {sizes.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => {
+                        setSize(s);
+                        setSizeError(false);
+                      }}
+                      className={cn(
+                        "h-11 min-w-11 rounded-full px-3 text-[13px] font-medium",
+                        size === s
+                          ? "bg-primary text-white"
+                          : "bg-[#f3f3f3] text-[#222] hover:bg-[#e8e8e8]",
+                      )}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+                {sizeError && (
+                  <p className="mt-2 text-[12px] text-destructive">
+                    Selecione o tamanho
+                  </p>
                 )}
               </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                em até 6x sem juros
-              </p>
+            )}
 
-              <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-                <button
-                  onClick={handleAdd}
-                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-full border border-primary px-6 py-3 text-sm font-bold text-primary transition-colors hover:bg-primary/10"
-                >
-                  <ShoppingCart className="h-4 w-4" />
-                  {added ? "Adicionado!" : "Adicionar ao carrinho"}
-                </button>
-                <Link
-                  to="/carrinho"
-                  onClick={() => add(product.id)}
-                  className="inline-flex flex-1 items-center justify-center rounded-full bg-primary px-6 py-3 text-sm font-bold text-primary-foreground transition-opacity hover:opacity-90"
-                >
-                  Comprar agora
-                </Link>
-              </div>
-
-              <div className="mt-4 flex flex-col gap-2 text-xs text-muted-foreground">
-                <span className="inline-flex items-center gap-2">
-                  <Truck className="h-4 w-4 text-primary" /> Envio para todo o
-                  Brasil
-                </span>
-                <span className="inline-flex items-center gap-2">
-                  <ShieldCheck className="h-4 w-4 text-primary" /> Troca grátis
-                  em até 30 dias
-                </span>
-              </div>
+            <div className="mt-8 hidden flex-col gap-3 lg:flex">
+              <button
+                type="button"
+                onClick={handleAdd}
+                className="h-12 rounded-full bg-primary text-[14px] font-semibold text-white"
+              >
+                {added ? "Adicionado à sacola" : "Adicionar à sacola"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (sizes.length && !size) {
+                    setSizeError(true);
+                    return;
+                  }
+                  add(product.id, 1, size || undefined);
+                  void navigate({ to: "/checkout" });
+                }}
+                className="flex h-12 items-center justify-center rounded-full border border-primary text-[14px] font-semibold text-primary"
+              >
+                Comprar agora
+              </button>
             </div>
 
-            {product.descricao && (
-              <div className="mt-6">
-                <h2 className="text-lg font-bold text-foreground">Descrição</h2>
-                <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-muted-foreground">
-                  {product.descricao}
-                </p>
+            <div className="mt-6 flex items-start gap-3 text-[13px] text-muted-foreground">
+              <Truck className="mt-0.5 h-4 w-4 text-primary" />
+              <p>
+                Envio para todo o Brasil. Informe o CEP no checkout para
+                calcular o prazo.
+              </p>
+            </div>
+
+            <div className="mt-8 border-t border-border pt-4">
+              <div className="flex gap-5 text-[13px] font-semibold">
+                {(
+                  [
+                    ["sobre", "Sobre"],
+                    ["tecnologias", "Tecnologias"],
+                    ["cuidados", "Cuidados"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setTab(key)}
+                    className={cn(
+                      "pb-2",
+                      tab === key
+                        ? "border-b-2 border-primary text-primary"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
-            )}
+              <div className="mt-4 whitespace-pre-line text-[14px] leading-relaxed text-[#444]">
+                {tab === "sobre" &&
+                  (product.descricao ||
+                    "Tênis ASICS com amortecimento e conforto para o seu ritmo.")}
+                {tab === "tecnologias" &&
+                  "Tecnologia ASICS de amortecimento e retorno de energia, cabedal respirável e solado com tração para asfalto e esteira."}
+                {tab === "cuidados" &&
+                  "Lave com pano úmido e sabão neutro. Evite máquina de lavar e secadora. Seque à sombra."}
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Relacionados */}
         {relacionados.length > 0 && (
-          <section className="mt-12">
-            <h2 className="text-xl font-bold text-foreground">
+          <section className="mt-12 lg:mt-16">
+            <h2 className="text-[20px] font-semibold text-[#222] sm:text-[22px]">
               Você também pode gostar
             </h2>
-            <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <div className="mt-5 grid grid-cols-2 gap-x-3 gap-y-8 sm:mt-6 sm:grid-cols-4 sm:gap-x-4 sm:gap-y-10">
               {relacionados.map((p) => (
-                <Link
-                  key={p.id}
-                  to="/produto/$id"
-                  params={{ id: String(p.id) }}
-                  className="group overflow-hidden rounded-xl border border-border bg-card"
-                >
-                  <div className="aspect-square overflow-hidden bg-muted">
-                    <img
-                      src={p.fotos[0]}
-                      alt={p.titulo}
-                      loading="lazy"
-                      className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                    />
-                  </div>
-                  <div className="p-3">
-                    <h3 className="line-clamp-2 text-sm font-medium text-foreground">
-                      {p.titulo}
-                    </h3>
-                    <span className="mt-1 block text-sm font-bold text-foreground">
-                      {formatBRL(p.preco)}
-                    </span>
-                  </div>
-                </Link>
+                <ProductCard key={p.id} product={p} />
               ))}
             </div>
           </section>
         )}
       </main>
-    </div>
+
+      <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-30 border-t border-border bg-white/95 px-3 py-2.5 backdrop-blur-sm lg:hidden">
+        <div className="mx-auto flex max-w-[1280px] items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[12px] font-medium text-[#222]">
+              {product.titulo}
+            </p>
+            <p className="text-[14px] font-semibold">{formatBRL(price)}</p>
+          </div>
+          <button
+            type="button"
+            onClick={handleAdd}
+            className="h-12 shrink-0 rounded-full bg-primary px-5 text-[13px] font-semibold text-white"
+          >
+            {added ? "Adicionado" : "Adicionar"}
+          </button>
+        </div>
+      </div>
+    </StoreLayout>
   );
 }

@@ -240,7 +240,7 @@ function CheckoutPage() {
         setPayError(result.error);
         return;
       }
-      await persistOrder({ ...order, pix: result.pix });
+      await persistOrder({ ...pendingOrder, pix: result.pix });
       track("generate_pix", {
         order_id: orderId,
         value: total,

@@ -93,6 +93,22 @@ export function keepTrackingSearch<T extends Record<string, unknown>>(search: T)
   return { ...search, ...pickTrackingSearch(search) };
 }
 
+export function compactAttribution(attr?: Attribution): Attribution {
+  const next: Attribution = {};
+  if (!attr) return next;
+  for (const key of TRACKING_SEARCH_KEYS) {
+    const value = cleanAttrValue(attr[key]);
+    if (!value || value.includes("{{") || value.includes("}}")) continue;
+    next[key] = value;
+  }
+  return inferAdSource(next);
+}
+
+export function hasCampaignTracking(attr?: Attribution) {
+  const next = compactAttribution(attr);
+  return Boolean(next.utm_source || next.utm_campaign || next.src || next.sck || next.fbclid || next.gclid || next.ttclid);
+}
+
 export const attributionHeadScript = `(function(){if(location.pathname.toLowerCase().indexOf("/admin")===0)return;var k=["src","sck","xcod","utm_source","utm_campaign","utm_medium","utm_content","utm_term","fbclid","gclid","ttclid"];var p=new URLSearchParams(location.search);var n={};k.forEach(function(key){var v=p.get(key);if(v&&v!=="null"&&v!=="undefined"){n[key]=v;try{localStorage.setItem(key,v);localStorage.setItem(key+"_exp",new Date(Date.now()+7*864e5).toISOString());}catch(e){}}});if(n.fbclid&&!n.utm_source)n.utm_source="FB";try{var prev=JSON.parse(localStorage.getItem("${ATTR_KEY}")||"{}");var m=Object.assign({},prev,n);if(!m.landing)m.landing=location.pathname+location.search;localStorage.setItem("${ATTR_KEY}",JSON.stringify(m));}catch(e){}})();`;
 
 function cleanAttrValue(value?: string | null) {

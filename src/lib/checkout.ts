@@ -1,4 +1,4 @@
-import { getAttribution, getSessionId, type Attribution } from "@/lib/tracking";
+import { compactAttribution, getAttribution, getSessionId, type Attribution } from "@/lib/tracking";
 
 export type PaymentMethod = "pix" | "card" | "boleto";
 export type ShippingMethodId = "gratis" | "padrao" | "expresso";
@@ -106,6 +106,7 @@ export interface OrderSummary {
     refused?: boolean;
     refunded?: boolean;
     createdAt?: string;
+    tracked?: boolean;
   };
 }
 
@@ -194,7 +195,10 @@ function writeOrders(orders: OrderSummary[]) {
 export async function persistOrder(order: OrderSummary, notify = true) {
   const next: OrderSummary = {
     ...order,
-    attribution: order.attribution ?? (typeof window === "undefined" ? undefined : getAttribution()),
+    attribution: compactAttribution({
+      ...(typeof window === "undefined" ? {} : getAttribution()),
+      ...order.attribution,
+    }),
     sessionId: order.sessionId ?? (typeof window === "undefined" ? undefined : getSessionId()),
     status: order.status ?? (order.pix?.status === "paid" ? "paid" : "pending"),
   };

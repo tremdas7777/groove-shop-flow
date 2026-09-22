@@ -6,6 +6,7 @@ import {
   type OrderSummary,
   type ShippingMethodId,
 } from "@/lib/checkout";
+import { compactAttribution, type Attribution } from "@/lib/tracking";
 
 export type PixStatus = "pending" | "paid" | "refused" | "refunded" | "unknown";
 
@@ -161,7 +162,11 @@ export const createMagicPayPix = createServerFn({ method: "POST" })
           },
         },
         externalRef: data.orderId,
-        metadata: JSON.stringify({ orderId: data.orderId }),
+        metadata: JSON.stringify({
+          orderId: data.orderId,
+          sessionId: data.order?.sessionId,
+          attribution: compactAttribution(data.order?.attribution),
+        }),
       };
 
       const body = await magicPayFetch("/v1/transactions", {
@@ -282,6 +287,18 @@ export async function listMagicPayTransactions() {
   return rows;
 }
 
+function attributionFromTx(tx: Record<string, unknown>): Attribution {
+  const meta = parseMetadata(tx.metadata);
+  const raw = meta.attribution && typeof meta.attribution === "object" ? (meta.attribution as Attribution) : {};
+  return compactAttribution(raw);
+}
+
+function sessionFromTx(tx: Record<string, unknown>, fallback: string) {
+  const meta = parseMetadata(tx.metadata);
+  const sessionId = String(meta.sessionId ?? "").trim();
+  return sessionId || fallback;
+}
+
 export function orderFromMagicPayTx(tx: Record<string, unknown>): OrderSummary | null {
   if (!isStoreTransaction(tx)) return null;
   const ref = storeOrderRef(tx);
@@ -344,6 +361,7 @@ export function orderFromMagicPayTx(tx: Record<string, unknown>): OrderSummary |
       status,
     },
     status,
-    sessionId: `mp_${tx.id ?? ref}`,
+    sessionId: sessionFromTx(tx, `mp_${tx.id ?? ref}`),
+    attribution: attributionFromTx(tx),
   };
 }

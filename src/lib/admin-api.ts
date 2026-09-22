@@ -22,7 +22,7 @@ import {
   emptyCheckout,
   type OrderSummary,
 } from "@/lib/checkout";
-import type { AnalyticsEvent, Attribution } from "@/lib/tracking";
+import { compactAttribution, hasCampaignTracking, type AnalyticsEvent, type Attribution } from "@/lib/tracking";
 
 const MAX_EVENTS = 15000;
 const MAX_ORDERS = 2000;
@@ -47,7 +47,15 @@ function mergeUtmfySent(left?: UtmfySent, right?: UtmfySent): UtmfySent {
     refused: Boolean(left?.refused || right?.refused),
     refunded: Boolean(left?.refunded || right?.refunded),
     createdAt: left?.createdAt || right?.createdAt,
+    tracked: Boolean(left?.tracked || right?.tracked),
   };
+}
+
+function preferSession(left?: string, right?: string) {
+  const real = (id?: string) => Boolean(id && !id.startsWith("mp_") && !id.startsWith("order:"));
+  if (real(left)) return left;
+  if (real(right)) return right;
+  return left || right;
 }
 
 function earlierIso(left?: string, right?: string) {
@@ -284,7 +292,7 @@ function mergeUtmfy(disk?: AdminSettings["utmfy"]) {
     enabled: true,
     pixelId: current.pixelId || incoming.pixelId || UTMIFY_PIXEL_ID,
     apiToken,
-    testMode: current.testMode || incoming.testMode,
+    testMode: typeof incoming.testMode === "boolean" ? incoming.testMode : current.testMode,
   };
 }
 
@@ -756,7 +764,7 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
     };
     return false;
   }
-  const attr = resolveOrderAttribution(order);
+  const attr = compactAttribution(resolveOrderAttribution(order));
   order.attribution = attr;
   const createdAt = utmfyCreatedAtFor(order);
   const totalCents = Math.max(1, Math.round(order.total * 100));
@@ -889,13 +897,18 @@ async function notifyUtmfy(order: OrderSummary) {
       sent = await rememberUtmfySent(orderId, { ...sent, createdAt });
     }
 
+    const current = { ...(stored ?? order), utmfySent: sent };
+    const tracked = hasCampaignTracking(resolveOrderAttribution(current));
     if (!sent.waiting_payment) {
-      const ok = await sendUtmfy({ ...(stored ?? order), utmfySent: sent }, "waiting_payment");
-      if (ok) sent = await rememberUtmfySent(orderId, { ...sent, waiting_payment: true, createdAt });
+      const ok = await sendUtmfy(current, "waiting_payment");
+      if (ok) sent = await rememberUtmfySent(orderId, { ...sent, waiting_payment: true, createdAt, tracked });
     }
     if (mapped !== "waiting_payment" && !sent[mapped]) {
-      const ok = await sendUtmfy({ ...(stored ?? order), utmfySent: sent }, mapped);
-      if (ok) sent = await rememberUtmfySent(orderId, { ...sent, [mapped]: true, createdAt });
+      const ok = await sendUtmfy({ ...current, utmfySent: sent }, mapped);
+      if (ok) sent = await rememberUtmfySent(orderId, { ...sent, [mapped]: true, createdAt, tracked });
+    } else if (tracked && !sent.tracked) {
+      const ok = await sendUtmfy({ ...current, utmfySent: sent }, mapped);
+      if (ok) sent = await rememberUtmfySent(orderId, { ...sent, [mapped]: true, createdAt, tracked: true });
     }
     order.utmfySent = sent;
   } finally {
@@ -1015,7 +1028,7 @@ function mergeOrders(prev: OrderSummary | undefined, incoming: OrderSummary): Or
     items: incoming.items?.length ? incoming.items : prev.items,
     pix: prev.pix || incoming.pix ? { ...prev.pix, ...incoming.pix } : incoming.pix,
     attribution: mergeAttribution(prev.attribution, incoming.attribution),
-    sessionId: incoming.sessionId || prev.sessionId,
+    sessionId: preferSession(prev.sessionId, incoming.sessionId),
     notes: incoming.notes || prev.notes,
     purchaseTracked: incoming.purchaseTracked || prev.purchaseTracked,
     utmfySent: mergeUtmfySent(prev.utmfySent, incoming.utmfySent),
@@ -1176,7 +1189,7 @@ async function syncMagicPayOrders() {
       );
       const merged = mergeOrders(prev, {
         ...incoming,
-        sessionId: prev?.sessionId || incoming.sessionId,
+        sessionId: preferSession(prev?.sessionId, incoming.sessionId),
         attribution: mergeAttribution(prev?.attribution, incoming.attribution),
         utmfySent: prev?.utmfySent,
       });
@@ -1187,17 +1200,10 @@ async function syncMagicPayOrders() {
       upsertOrderLocal(merged);
       const saved = store.orders.find((item) => item.id === merged.id) ?? merged;
       ensureOrderTraffic(saved);
-      const prevStatus = prev ? utmfyStatusOf(prev) : undefined;
-      const nextStatus = utmfyStatusOf(saved);
-      const ageMs = Date.now() - new Date(saved.createdAt).getTime();
-      const becamePaid = Boolean(prev) && prevStatus !== "paid" && nextStatus === "paid";
-      const freshPending = !prev && nextStatus === "waiting_payment" && ageMs < 10 * 60 * 1000;
-      if (becamePaid || freshPending) {
-        try {
-          await notifyUtmfy(saved);
-        } catch {
-          // pedido já entrou no painel
-        }
+      try {
+        await notifyUtmfy(saved);
+      } catch {
+        // pedido já entrou no painel
       }
     }
     lastMagicSync = Date.now();

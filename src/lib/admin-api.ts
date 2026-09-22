@@ -212,7 +212,7 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
   };
 
   try {
-    const res = await fetch("https://api.utmfy.com.br/api-credentials/orders", {
+    const res = await fetch("https://api.utmify.com.br/api-credentials/orders", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

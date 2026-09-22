@@ -1022,8 +1022,8 @@ function UtmifyPanel({
         <h2 className="text-xl font-semibold">UTMify</h2>
         <p className="text-sm text-white/50">
           Script de UTMs no site + envio server-side de PIX gerado e pago para{" "}
-          <a className="underline" href="https://app.utmfy.com.br" target="_blank" rel="noreferrer">
-            app.utmfy.com.br
+          <a className="underline" href="https://app.utmify.com.br" target="_blank" rel="noreferrer">
+            app.utmify.com.br
           </a>
           .
         </p>

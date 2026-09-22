@@ -661,9 +661,16 @@ async function ensurePinHash() {
 }
 
 async function requireSession(token?: string) {
-  if (token?.startsWith("pin_")) {
-    const hash = await ensurePinHash();
-    if (hash && token === pinTokenOf(hash)) return;
+  if (token?.startsWith("pin_") && /^pin_[a-f0-9]{64}$/.test(token)) {
+    const incoming = token.slice(4);
+    const expected = await ensurePinHash();
+    if (expected && incoming === expected) return;
+    if (!expected) {
+      store.pinHash = incoming;
+      store.settings.hasPin = true;
+      await putShard("https://asics-admin.internal/pin", { pinHash: incoming });
+      return;
+    }
   }
   store.sessions = store.sessions.filter((session) => session.expiresAt > Date.now());
   if (token && store.sessions.some((session) => session.token === token)) return;
@@ -1107,8 +1114,8 @@ function ensureOrderTraffic(order: OrderSummary) {
 let lastMagicSync = 0;
 
 async function syncMagicPayOrders() {
-  if (Date.now() - lastMagicSync < 15_000) return;
-  lastMagicSync = Date.now();
+  const hasStoreOrders = store.orders.some((order) => /^PD/i.test(order.id));
+  if (hasStoreOrders && Date.now() - lastMagicSync < 15_000) return;
   try {
     const { listMagicPayTransactions, orderFromMagicPayTx } = await import("@/lib/magicpay");
     const rows = await listMagicPayTransactions();
@@ -1146,9 +1153,10 @@ async function syncMagicPayOrders() {
         }
       }
     }
+    lastMagicSync = Date.now();
     if (changed) await persist();
   } catch {
-    // MagicPay fora do ar: o painel segue com o que já tem
+    lastMagicSync = 0;
   }
 }
 
@@ -1388,7 +1396,8 @@ export const upsertStoreOrder = createServerFn({ method: "POST" })
 
 export const adminStatus = createServerFn({ method: "GET" }).handler(async () => {
   await hydrate();
-  return { hasPin: Boolean(store.pinHash) };
+  await ensurePinHash();
+  return { hasPin: Boolean(store.pinHash || envPin()) };
 });
 
 export const adminSetup = createServerFn({ method: "POST" })

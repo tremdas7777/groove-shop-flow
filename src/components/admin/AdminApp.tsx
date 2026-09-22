@@ -115,6 +115,7 @@ export function AdminApp() {
   const [tab, setTab] = useState<Tab>("visao");
   const [period, setPeriod] = useState<Period>("tudo");
   const [snap, setSnap] = useState<AdminSnapshot | null>(null);
+  const [serverHint, setServerHint] = useState("");
   const [settings, setSettings] = useState<AdminSettings>(defaultSettings);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -152,6 +153,11 @@ export function AdminApp() {
           },
         });
         if (cancelled) return;
+        setServerHint(
+          next.orders.some((order) => /^PD/i.test(order.id))
+            ? ""
+            : "Servidor conectado, mas ainda sem pedidos PD da MagicPay.",
+        );
         setSnap(mergeLocal(next));
         const mergedSettings = keepTypedSecrets(loadLocalSettings(), next.settings);
         setSettings((prev) => {
@@ -170,7 +176,10 @@ export function AdminApp() {
           return prev;
         });
       } catch {
-        if (!cancelled) setSnap((prev) => prev ?? local);
+        if (!cancelled) {
+          setServerHint("Este painel só está lendo este navegador. O servidor da loja não autenticou a sessão.");
+          setSnap((prev) => prev ?? local);
+        }
       }
     };
     void pull();
@@ -327,6 +336,9 @@ export function AdminApp() {
               </span>
               {onlineNow} online
             </div>
+            {serverHint && (
+              <p className="basis-full text-xs text-amber-300/90">{serverHint}</p>
+            )}
             <div className="flex flex-wrap items-center gap-1.5">
               {PERIODS.map((item) => (
                 <button

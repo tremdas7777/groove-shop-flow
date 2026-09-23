@@ -24,6 +24,7 @@ import {
   getProduct,
   parsePrice,
 } from "@/lib/products";
+import { hasTypedLead, pingStorePresence } from "@/lib/live-ping";
 import { getAttribution, getSessionId, track } from "@/lib/tracking";
 import { cn } from "@/lib/utils";
 
@@ -70,6 +71,23 @@ function CheckoutPage() {
   useEffect(() => {
     if (ready) saveCheckoutDraft(data);
   }, [data, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const lead = {
+      email: data.email.trim() || undefined,
+      name: data.name.trim() || undefined,
+      phone: data.phone.trim() || undefined,
+      city: data.city.trim() || undefined,
+      state: data.state.trim() || undefined,
+      shipping: data.shippingMethod || undefined,
+    };
+    if (!hasTypedLead(lead)) return;
+    const timer = window.setTimeout(() => {
+      pingStorePresence(lead);
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [ready, data.email, data.name, data.phone, data.city, data.state, data.shippingMethod]);
 
   const detailed = items
     .map((i) => ({ item: i, product: getProduct(i.id) }))

@@ -137,6 +137,9 @@ export function LiveView({
                 </div>
                 <p className="mt-0.5 text-xs text-white/50">
                   {pageLabel(event.path)}
+                  {event.props?.["name"] ? ` · ${String(event.props["name"])}` : ""}
+                  {event.props?.["email"] ? ` · ${String(event.props["email"])}` : ""}
+                  {event.props?.["phone"] ? ` · ${String(event.props["phone"])}` : ""}
                   {event.props?.["content_name"] ? ` · ${String(event.props["content_name"])}` : ""}
                   {` · ${event.device} · ${sourceLabel(event.attribution)}`}
                 </p>
@@ -206,12 +209,26 @@ function VisitorCard({
               {session.step.short}
             </span>
           </div>
-          <p className="mt-2 truncate font-medium">{pageLabel(session.path)}</p>
+          <p className="mt-2 truncate font-medium">
+            {session.identity || pageLabel(session.path)}
+          </p>
+          {session.identity && (
+            <p className="mt-0.5 truncate text-xs text-white/50">{pageLabel(session.path)}</p>
+          )}
           {session.productName && session.stepIndex > 0 && (
             <p className="mt-0.5 truncate text-xs text-white/50">{session.productName}</p>
           )}
+          {(session.email || session.phone) && (
+            <p className="mt-1 truncate text-xs text-white/75">
+              {[session.email, session.phone].filter(Boolean).join(" · ")}
+            </p>
+          )}
+          {(session.city || session.state) && (
+            <p className="truncate text-xs text-white/40">
+              {[session.city, session.state].filter(Boolean).join(" / ")}
+            </p>
+          )}
           <p className="mt-1 text-xs text-white/40">
-            {session.identity ? `${session.identity} · ` : ""}
             {sourceLabel(session.attribution)}
             {session.attribution.utm_campaign ? ` · ${session.attribution.utm_campaign}` : ""}
           </p>
@@ -239,6 +256,21 @@ function VisitorCard({
 
       {open && (
         <ol className="mt-4 space-y-2 border-t border-white/8 pt-3">
+          {(session.identity || session.email || session.phone) && (
+            <li className="rounded-xl bg-white/6 px-3 py-2 text-xs text-white/80">
+              <span className="block text-[10px] font-semibold uppercase tracking-wide text-[#E0B761]">
+                Dados digitados
+              </span>
+              {session.identity && <span className="mt-1 block">{session.identity}</span>}
+              {session.email && <span className="block text-white/65">{session.email}</span>}
+              {session.phone && <span className="block text-white/65">{session.phone}</span>}
+              {(session.city || session.state) && (
+                <span className="block text-white/45">
+                  {[session.city, session.state].filter(Boolean).join(" / ")}
+                </span>
+              )}
+            </li>
+          )}
           {session.events.length === 0 && (
             <li className="text-xs text-white/40">Ainda sem eventos desta sessão.</li>
           )}

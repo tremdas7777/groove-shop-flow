@@ -91,6 +91,24 @@ export interface PresenceVisitor {
   shipping?: string;
 }
 
+export function keepVisitorLead(prev: PresenceVisitor, incoming: PresenceVisitor): PresenceVisitor {
+  const newer = !prev.lastTs || incoming.lastTs >= prev.lastTs ? incoming : prev;
+  const older = newer === incoming ? prev : incoming;
+  return {
+    ...older,
+    ...newer,
+    startedAt: prev.startedAt || incoming.startedAt,
+    email: incoming.email || prev.email,
+    name: incoming.name || prev.name,
+    phone: incoming.phone || prev.phone,
+    city: incoming.city || prev.city,
+    state: incoming.state || prev.state,
+    shipping: incoming.shipping || prev.shipping,
+    cartItems: incoming.cartItems?.length ? incoming.cartItems : prev.cartItems,
+    cartValue: incoming.cartValue || prev.cartValue,
+  };
+}
+
 export interface AdminSnapshot {
   settings: AdminSettings;
   events: AnalyticsEvent[];
@@ -649,6 +667,11 @@ export interface LiveSession {
   events: AnalyticsEvent[];
   productName?: string;
   identity?: string;
+  email?: string;
+  phone?: string;
+  city?: string;
+  state?: string;
+  shipping?: string;
   value?: number;
   order?: OrderSummary;
 }
@@ -711,12 +734,23 @@ export function buildLiveSessions(
       [...trail].reverse().find((event) => Number(event.props?.value ?? event.props?.total))?.props?.value ?? 0,
     );
     const value = order?.total ?? (eventValue || undefined);
-    const identity = order
-      ? customerName(order.data)
-      : visitor?.name ||
-        visitor?.email ||
-        String([...trail].reverse().find((event) => event.props?.email)?.props?.email ?? "") ||
-        undefined;
+    const emailEvent = [...trail].reverse().find((event) => propText(event.props, "email"));
+    const nameEvent = [...trail].reverse().find((event) => propText(event.props, "name"));
+    const phoneEvent = [...trail].reverse().find((event) => propText(event.props, "phone"));
+    const cityEvent = [...trail].reverse().find((event) => propText(event.props, "city"));
+    const stateEvent = [...trail].reverse().find((event) => propText(event.props, "state"));
+    const shipEvent = [...trail].reverse().find((event) => propText(event.props, "shipping"));
+    const identity =
+      (order ? customerName(order.data) : "") ||
+      visitor?.name ||
+      propText(nameEvent?.props, "name") ||
+      undefined;
+    const email = order?.data.email || visitor?.email || propText(emailEvent?.props, "email") || undefined;
+    const phone = order?.data.phone || visitor?.phone || propText(phoneEvent?.props, "phone") || undefined;
+    const city = order?.data.city || visitor?.city || propText(cityEvent?.props, "city") || undefined;
+    const state = order?.data.state || visitor?.state || propText(stateEvent?.props, "state") || undefined;
+    const shipping =
+      order?.data.shippingMethod || visitor?.shipping || propText(shipEvent?.props, "shipping") || undefined;
 
     sessions.push({
       sessionId,
@@ -732,6 +766,11 @@ export function buildLiveSessions(
       events: trail,
       productName: product,
       identity,
+      email,
+      phone,
+      city,
+      state,
+      shipping,
       value,
       order,
     });
@@ -971,7 +1010,23 @@ export function buildAbandonedCarts(
     const paid = trail.some((event) => event.name === "purchase") || (order && orderStatus(order) === "paid");
     if (paid) continue;
 
+    const emailEvent = [...trail].reverse().find((event) => propText(event.props, "email"));
+    const nameEvent = [...trail].reverse().find((event) => propText(event.props, "name"));
+    const phoneEvent = [...trail].reverse().find((event) => propText(event.props, "phone"));
+    const cityEvent = [...trail].reverse().find((event) => propText(event.props, "city"));
+    const stateEvent = [...trail].reverse().find((event) => propText(event.props, "state"));
+    const shipEvent = [...trail].reverse().find((event) => propText(event.props, "shipping"));
+    const name = order ? customerName(order.data) : visitor?.name || propText(nameEvent?.props, "name") || undefined;
+    const email = order?.data.email || visitor?.email || propText(emailEvent?.props, "email") || undefined;
+    const phone = order?.data.phone || visitor?.phone || propText(phoneEvent?.props, "phone") || undefined;
+    const city = order?.data.city || visitor?.city || propText(cityEvent?.props, "city") || undefined;
+    const state = order?.data.state || visitor?.state || propText(stateEvent?.props, "state") || undefined;
+    const shipping =
+      order?.data.shippingMethod || visitor?.shipping || propText(shipEvent?.props, "shipping") || undefined;
+    const hasLead = Boolean(name?.trim() || email?.trim() || phone?.replace(/\D/g, "") || city?.trim());
+
     const hasIntent =
+      hasLead ||
       Boolean(order) ||
       Boolean(visitor?.cartItems?.length) ||
       trail.some(
@@ -987,7 +1042,7 @@ export function buildAbandonedCarts(
     if (!stamp || !startedAt) continue;
 
     const online = Boolean(visitor && isOnline(visitor.lastTs, now)) || isOnline(stamp, now);
-    if (online || now - new Date(stamp).getTime() < ABANDON_MS) continue;
+    if (!hasLead && (online || now - new Date(stamp).getTime() < ABANDON_MS)) continue;
 
     const path = visitor?.path ?? last?.path ?? (order ? "/pedido" : "/");
     const lastMeaningful =
@@ -999,7 +1054,8 @@ export function buildAbandonedCarts(
     const fromEvents = stepIndexFromEvents(trail);
     const fromPath = stepIndexFromPath(path);
     const fromOrder = order ? 6 : 0;
-    const stepIndex = Math.max(fromEvents, fromPath, fromOrder);
+    const fromLead = hasLead ? 4 : 0;
+    const stepIndex = Math.max(fromEvents, fromPath, fromOrder, fromLead);
     const items = itemsForSession(trail, visitor, order);
     const eventValue = Number(
       [...trail].reverse().find((event) => Number(event.props?.value ?? event.props?.total))?.props?.value ?? 0,
@@ -1009,14 +1065,7 @@ export function buildAbandonedCarts(
       visitor?.cartValue ||
       items.reduce((acc, item) => acc + item.price * item.qty, 0) ||
       eventValue;
-    if (items.length === 0 && !order && value <= 0) continue;
-
-    const emailEvent = [...trail].reverse().find((event) => propText(event.props, "email"));
-    const nameEvent = [...trail].reverse().find((event) => propText(event.props, "name"));
-    const phoneEvent = [...trail].reverse().find((event) => propText(event.props, "phone"));
-    const cityEvent = [...trail].reverse().find((event) => propText(event.props, "city"));
-    const stateEvent = [...trail].reverse().find((event) => propText(event.props, "state"));
-    const shipEvent = [...trail].reverse().find((event) => propText(event.props, "shipping"));
+    if (items.length === 0 && !order && value <= 0 && !hasLead) continue;
 
     carts.push({
       sessionId,
@@ -1025,26 +1074,32 @@ export function buildAbandonedCarts(
       path,
       device: visitor?.device ?? last?.device ?? "mobile",
       attribution: visitor?.attribution ?? last?.attribution ?? order?.attribution ?? {},
-      lastEvent,
+      lastEvent: hasLead && lastEvent === "begin_checkout" ? "checkout_identify" : lastEvent,
       stepIndex,
-      dropOff: dropOffFor(stepIndex, lastEvent, path),
+      dropOff: dropOffFor(
+        stepIndex,
+        hasLead && lastEvent === "begin_checkout" ? "checkout_identify" : lastEvent,
+        path,
+      ),
       items,
       value,
       qty: items.reduce((acc, item) => acc + item.qty, 0),
-      name: order ? customerName(order.data) : visitor?.name || propText(nameEvent?.props, "name") || undefined,
-      email: order?.data.email || visitor?.email || propText(emailEvent?.props, "email") || undefined,
-      phone: order?.data.phone || visitor?.phone || propText(phoneEvent?.props, "phone") || undefined,
-      city: order?.data.city || visitor?.city || propText(cityEvent?.props, "city") || undefined,
-      state: order?.data.state || visitor?.state || propText(stateEvent?.props, "state") || undefined,
-      shipping:
-        order?.data.shippingMethod || visitor?.shipping || propText(shipEvent?.props, "shipping") || undefined,
+      name,
+      email,
+      phone,
+      city,
+      state,
+      shipping,
       order,
       events: trail,
     });
   }
 
   for (const order of orphanOrders) {
-    if (now - new Date(order.createdAt).getTime() < ABANDON_MS) continue;
+    const orphanHasLead = Boolean(
+      customerName(order.data) || order.data.email || order.data.phone?.replace(/\D/g, ""),
+    );
+    if (!orphanHasLead && now - new Date(order.createdAt).getTime() < ABANDON_MS) continue;
     carts.push({
       sessionId: `order:${order.id}`,
       lastTs: order.createdAt,

@@ -84,7 +84,7 @@ export function AbandonedCarts({
       <div>
         <h2 className="text-xl font-semibold">Carrinhos abandonados</h2>
         <p className="text-sm text-white/50">
-          Quem colocou produto na sacola ou começou o checkout e saiu, e em que etapa parou.
+          Quem digitou qualquer dado no checkout entra aqui na hora. O restante da sacola aparece depois de alguns minutos.
         </p>
       </div>
 
@@ -147,7 +147,7 @@ export function AbandonedCarts({
       <div className="space-y-3">
         {visible.length === 0 && (
           <div className="rounded-2xl border border-dashed border-white/10 px-4 py-10 text-sm text-white/40">
-            Nenhum carrinho abandonado neste recorte. Quem adicionar à sacola e sair aparece aqui em alguns minutos.
+            Nenhum carrinho abandonado neste recorte. Quem digitar nome, e-mail ou telefone no checkout aparece aqui na hora.
           </div>
         )}
         {visible.map((cart) => (

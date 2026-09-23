@@ -43,6 +43,7 @@ import {
   buildCampaigns,
   buildFunnel,
   buildLiveSessions,
+  keepVisitorLead,
   defaultSettings,
   inPeriod,
   listPixelItems,
@@ -154,7 +155,7 @@ export function AdminApp() {
           if (!visitor?.sessionId) continue;
           const index = next.visitors.findIndex((item) => item.sessionId === visitor.sessionId);
           if (index === -1) next.visitors.push(visitor);
-          else if (visitor.lastTs > next.visitors[index].lastTs) next.visitors[index] = { ...next.visitors[index], ...visitor };
+          else next.visitors[index] = keepVisitorLead(next.visitors[index], visitor);
         }
         setServerHint(
           next.orders.some((order) => /^PD/i.test(order.id))
@@ -516,7 +517,7 @@ function mergeLocal(snap: AdminSnapshot): AdminSnapshot {
   for (const visitor of localVisitors) {
     const index = visitors.findIndex((item) => item.sessionId === visitor.sessionId);
     if (index === -1) visitors.push(visitor);
-    else if (visitors[index] && visitor.lastTs > visitors[index].lastTs) visitors[index] = visitor;
+    else visitors[index] = keepVisitorLead(visitors[index], visitor);
   }
   const orders = snap.orders.filter((order) => !isDemoOrder(order.id));
   for (const order of localOrders) {

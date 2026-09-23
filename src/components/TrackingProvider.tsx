@@ -4,42 +4,13 @@ import { getPublicTrackingSettings, heartbeatVisitor, ingestStoreEvent } from "@
 import type { PublicTrackingSettings } from "@/lib/admin";
 import { listPixelItems } from "@/lib/admin";
 import { loadPublicSettings, touchLocalPresence } from "@/lib/admin-local";
-import { describeCart, readStoredCart } from "@/lib/cart-snapshot";
-import { loadCheckoutDraft } from "@/lib/checkout";
-import {
-  captureAttribution,
-  detectDevice,
-  getAttribution,
-  getLastTrackedName,
-  getSessionId,
-  setEventIngest,
-  track,
-} from "@/lib/tracking";
+import { buildLivePresence, pingStorePresence } from "@/lib/live-ping";
+import { captureAttribution, setEventIngest, track } from "@/lib/tracking";
 import { injectTikTokPixel } from "@/lib/tiktok-pixel";
 import { injectUtmifyPixel, UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 
 function isAdminPath(path: string) {
   return path.toLowerCase().startsWith("/admin");
-}
-
-function pingLiveApi(payload: Record<string, unknown>) {
-  const body = JSON.stringify(payload);
-  try {
-    if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
-      const blob = new Blob([body], { type: "text/plain" });
-      if (navigator.sendBeacon("/api/live", blob)) return;
-    }
-  } catch {
-    // sendBeacon bloqueado
-  }
-  if (typeof fetch !== "function") return;
-  void fetch("/api/live", {
-    method: "POST",
-    headers: { "content-type": "text/plain" },
-    body,
-    keepalive: true,
-    credentials: "same-origin",
-  }).catch(() => undefined);
 }
 
 function ensureScript(src: string, attrs: Record<string, string> = {}) {
@@ -168,7 +139,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     captureAttribution();
     injectUtmifyPixel();
     setEventIngest((event) => {
-      pingLiveApi({
+      pingStorePresence({
         sessionId: event.sessionId,
         path: event.path,
         title: event.title,
@@ -177,6 +148,12 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         lastEvent: event.name,
         lastTs: event.ts,
         startedAt: event.ts,
+        email: typeof event.props?.email === "string" ? event.props.email : undefined,
+        name: typeof event.props?.name === "string" ? event.props.name : undefined,
+        phone: typeof event.props?.phone === "string" ? event.props.phone : undefined,
+        city: typeof event.props?.city === "string" ? event.props.city : undefined,
+        state: typeof event.props?.state === "string" ? event.props.state : undefined,
+        shipping: typeof event.props?.shipping === "string" ? event.props.shipping : undefined,
         event,
       });
       const send = async (attempt = 0) => {
@@ -222,28 +199,9 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isAdminPath(pathname)) return;
     const beat = () => {
-      const cart = describeCart(readStoredCart());
-      const draft = loadCheckoutDraft();
-      const payload = {
-        sessionId: getSessionId(),
-        path: window.location.pathname + window.location.search,
-        title: document.title,
-        device: detectDevice(),
-        attribution: getAttribution(),
-        lastEvent: getLastTrackedName(),
-        lastTs: new Date().toISOString(),
-        startedAt: new Date().toISOString(),
-        cartItems: cart.items,
-        cartValue: cart.value,
-        email: draft.email.trim() || undefined,
-        name: draft.name.trim() || undefined,
-        phone: draft.phone.trim() || undefined,
-        city: draft.city.trim() || undefined,
-        state: draft.state.trim() || undefined,
-        shipping: draft.shippingMethod || undefined,
-      };
+      const payload = buildLivePresence();
       touchLocalPresence(payload);
-      pingLiveApi(payload);
+      pingStorePresence();
       const sendBeat = async (attempt = 0) => {
         try {
           await heartbeatVisitor({

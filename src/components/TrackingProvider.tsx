@@ -22,6 +22,26 @@ function isAdminPath(path: string) {
   return path.toLowerCase().startsWith("/admin");
 }
 
+function pingLiveApi(payload: Record<string, unknown>) {
+  const body = JSON.stringify(payload);
+  try {
+    if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+      const blob = new Blob([body], { type: "text/plain" });
+      if (navigator.sendBeacon("/api/live", blob)) return;
+    }
+  } catch {
+    // sendBeacon bloqueado
+  }
+  if (typeof fetch !== "function") return;
+  void fetch("/api/live", {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body,
+    keepalive: true,
+    credentials: "same-origin",
+  }).catch(() => undefined);
+}
+
 function ensureScript(src: string, attrs: Record<string, string> = {}) {
   if (document.querySelector(`script[src="${src}"]`)) return;
   const script = document.createElement("script");
@@ -148,6 +168,17 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     captureAttribution();
     injectUtmifyPixel();
     setEventIngest((event) => {
+      pingLiveApi({
+        sessionId: event.sessionId,
+        path: event.path,
+        title: event.title,
+        device: event.device,
+        attribution: event.attribution,
+        lastEvent: event.name,
+        lastTs: event.ts,
+        startedAt: event.ts,
+        event,
+      });
       const send = async (attempt = 0) => {
         try {
           await ingestStoreEvent({ data: event });
@@ -212,6 +243,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         shipping: draft.shippingMethod || undefined,
       };
       touchLocalPresence(payload);
+      pingLiveApi(payload);
       const sendBeat = async (attempt = 0) => {
         try {
           await heartbeatVisitor({
@@ -239,8 +271,15 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       void sendBeat();
     };
     beat();
-    const id = window.setInterval(beat, 8000);
-    return () => window.clearInterval(id);
+    const onHide = () => beat();
+    window.addEventListener("pagehide", onHide);
+    document.addEventListener("visibilitychange", onHide);
+    const id = window.setInterval(beat, 4000);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onHide);
+    };
   }, [pathname]);
 
   return children;

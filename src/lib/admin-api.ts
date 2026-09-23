@@ -37,6 +37,7 @@ const ORDER_PREFIX = "https://asics-admin.internal/order/";
 const SESSION_PREFIX = "https://asics-admin.internal/session/";
 const UTMIFY_PREFIX = "https://asics-admin.internal/utmfy/";
 const UTMIFY_TOKEN_URL = "https://asics-admin.internal/utmfy-token";
+const LIVE_BUS_URL = "https://asics-admin.internal/live-bus";
 
 type UtmfyStatus = "waiting_payment" | "paid" | "refused" | "refunded";
 type UtmfySent = NonNullable<OrderSummary["utmfySent"]>;
@@ -139,6 +140,134 @@ async function persistTrafficShards(input: {
     }
   }
   if (input.session?.token) await putShard(`${SESSION_PREFIX}${input.session.token}`, input.session);
+}
+
+interface LiveBus {
+  visitors: PresenceVisitor[];
+  events: AnalyticsEvent[];
+  writtenAt: number;
+}
+
+function liveBusPath() {
+  return `${process.cwd()}/data/live-bus.json`;
+}
+
+function emptyLiveBus(): LiveBus {
+  return { visitors: [], events: [], writtenAt: 0 };
+}
+
+function unionLiveBus(left: LiveBus, right: LiveBus): LiveBus {
+  const visitors = new Map<string, PresenceVisitor>();
+  for (const visitor of [...left.visitors, ...right.visitors]) {
+    if (!visitor?.sessionId) continue;
+    visitors.set(visitor.sessionId, mergeVisitor(visitors.get(visitor.sessionId), visitor));
+  }
+  const events = new Map<string, AnalyticsEvent>();
+  for (const event of [...left.events, ...right.events]) {
+    if (event?.id) events.set(event.id, event);
+  }
+  return {
+    visitors: [...visitors.values()]
+      .sort((a, b) => (b.lastTs || "").localeCompare(a.lastTs || ""))
+      .slice(0, 400),
+    events: [...events.values()].sort((a, b) => a.ts.localeCompare(b.ts)).slice(-800),
+    writtenAt: Math.max(left.writtenAt || 0, right.writtenAt || 0),
+  };
+}
+
+async function readLiveBus(): Promise<LiveBus> {
+  const parts: LiveBus[] = [];
+  try {
+    const { readFile } = await import("node:fs/promises");
+    parts.push(JSON.parse(await readFile(liveBusPath(), "utf8")) as LiveBus);
+  } catch {
+    // sem arquivo
+  }
+  try {
+    const shard = await getShard<LiveBus>(LIVE_BUS_URL);
+    if (shard?.visitors || shard?.events) parts.push(shard);
+  } catch {
+    // isolate sem cache
+  }
+  if (!parts.length) return emptyLiveBus();
+  return parts.reduce((acc, part) => unionLiveBus(acc, part));
+}
+
+async function writeLiveBus(bus: LiveBus) {
+  const next = { ...bus, writtenAt: Date.now() };
+  const body = JSON.stringify(next);
+  try {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { dirname } = await import("node:path");
+    const path = liveBusPath();
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, body);
+  } catch {
+    // ambiente sem disco
+  }
+  await putShard(LIVE_BUS_URL, next);
+}
+
+function applyLiveToStore(bus: LiveBus) {
+  for (const visitor of bus.visitors) {
+    if (!visitor?.sessionId) continue;
+    store.presence.set(visitor.sessionId, mergeVisitor(store.presence.get(visitor.sessionId), visitor));
+  }
+  if (!bus.events.length) return;
+  const byId = new Map(store.events.map((event) => [event.id, event]));
+  for (const event of bus.events) {
+    if (!event?.id || byId.has(event.id)) continue;
+    byId.set(event.id, event);
+    store.events.push(event);
+  }
+  store.events = store.events.sort((a, b) => a.ts.localeCompare(b.ts)).slice(-MAX_EVENTS);
+}
+
+async function mergeLiveBusIntoStore() {
+  applyLiveToStore(await readLiveBus());
+}
+
+let liveChain: Promise<void> = Promise.resolve();
+
+async function rememberLive(input: { visitor?: PresenceVisitor; event?: AnalyticsEvent }) {
+  const run = async () => {
+    const current = await readLiveBus();
+    if (input.visitor?.sessionId) {
+      const merged = mergeVisitor(
+        mergeVisitor(
+          current.visitors.find((visitor) => visitor.sessionId === input.visitor!.sessionId),
+          store.presence.get(input.visitor.sessionId),
+        ),
+        input.visitor,
+      );
+      current.visitors = [merged, ...current.visitors.filter((visitor) => visitor.sessionId !== merged.sessionId)].slice(
+        0,
+        400,
+      );
+      store.presence.set(merged.sessionId, merged);
+    }
+    if (input.event?.id) {
+      current.events = [...current.events.filter((event) => event.id !== input.event!.id), input.event]
+        .sort((a, b) => a.ts.localeCompare(b.ts))
+        .slice(-800);
+      if (!store.events.some((event) => event.id === input.event!.id)) {
+        store.events = [...store.events, input.event].slice(-MAX_EVENTS);
+      }
+    }
+    await writeLiveBus(current);
+  };
+  liveChain = liveChain.then(run, run);
+  await liveChain;
+}
+
+function persistSoon(ctx?: { waitUntil?: (job: Promise<unknown>) => void }) {
+  const job = persist();
+  try {
+    ctx?.waitUntil?.(job);
+  } catch {
+    // sem waitUntil neste runtime
+  }
+  void job;
 }
 
 async function getShard<T>(url: string): Promise<T | null> {
@@ -621,6 +750,7 @@ async function persist() {
     try {
       const disk = await readPersisted();
       if (disk) mergePersisted(disk);
+      await mergeLiveBusIntoStore();
       const next = keepRicherTraffic(serializeState(), disk);
       const nextItems = normalizePixels(next.settings?.pixels).items;
       const diskItems = normalizePixels(disk?.settings?.pixels).items;
@@ -631,12 +761,8 @@ async function persist() {
         if (next.settings) next.settings.pixels = pixels;
         store.settings.pixels = pixels;
       }
-      if (next.events) store.events = next.events;
-      if (next.orders) store.orders = next.orders;
-      if (next.presence) {
-        store.presence = new Map(next.presence.map((visitor) => [visitor.sessionId, visitor]));
-      }
-      await writePersisted(next);
+      mergePersisted(next);
+      await writePersisted(serializeState());
     } catch {
       // um isolate falhou: o próximo persist tenta de novo
     }
@@ -660,6 +786,7 @@ async function hydrate() {
     }
     mergePersisted(data);
   }
+  await mergeLiveBusIntoStore();
   store.pinHash = await sha256(envPin());
   store.settings.hasPin = true;
   await loadUtmfyToken();
@@ -1538,93 +1665,183 @@ function keepCartFields(
 
 export const getPublicTrackingSettings = createServerFn({ method: "GET" }).handler(async () => {
   await hydrate();
-  await refreshPendingPix();
   return publicSettings();
 });
 
-export const ingestStoreEvent = createServerFn({ method: "POST" })
-  .validator(eventSchema)
-  .handler(async ({ data }) => {
-    await hydrate();
-    if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
-    const device = data.device === "desktop" || data.device === "tablet" ? data.device : "mobile";
-    const incoming = { ...data, device, attribution: data.attribution ?? {} } as AnalyticsEvent;
-    const prev = store.presence.get(incoming.sessionId);
-    const fromProps = cartFromProps(incoming.props);
-    store.events = [...store.events.filter((event) => event.id !== incoming.id), incoming].slice(-MAX_EVENTS);
-    store.presence.set(
-      incoming.sessionId,
-      mergeVisitor(prev, {
-        sessionId: incoming.sessionId,
-        path: incoming.path,
-        title: incoming.title,
-        device,
-        attribution: incoming.attribution ?? {},
-        lastEvent: incoming.name,
-        lastTs: incoming.ts,
-        startedAt: prev?.startedAt ?? incoming.ts,
-        ...keepCartFields(prev, {
-          cartItems: fromProps.cartItems,
-          cartValue: fromProps.cartValue,
-          email: textProp(incoming.props, "email"),
-          name: textProp(incoming.props, "name"),
-          phone: textProp(incoming.props, "phone"),
-          city: textProp(incoming.props, "city"),
-          state: textProp(incoming.props, "state"),
-          shipping: textProp(incoming.props, "shipping"),
-        }),
-      }),
-    );
+function visitorFromPing(data: {
+  sessionId: string;
+  path: string;
+  title?: string;
+  device?: string;
+  attribution?: Attribution;
+  lastEvent?: string;
+  lastTs?: string;
+  startedAt?: string;
+  cartItems?: PresenceVisitor["cartItems"];
+  cartValue?: number;
+  email?: string;
+  name?: string;
+  phone?: string;
+  city?: string;
+  state?: string;
+  shipping?: string;
+}): PresenceVisitor {
+  const prev = store.presence.get(data.sessionId);
+  const device = data.device === "desktop" || data.device === "tablet" ? data.device : "mobile";
+  const lastTs = data.lastTs || new Date().toISOString();
+  const lastEvent =
+    data.lastEvent === "heartbeat" && prev?.lastEvent && prev.lastEvent !== "heartbeat"
+      ? prev.lastEvent
+      : data.lastEvent || "page_view";
+  return mergeVisitor(prev, {
+    sessionId: data.sessionId,
+    path: data.path,
+    title: data.title,
+    device,
+    attribution: data.attribution ?? {},
+    lastEvent,
+    lastTs,
+    startedAt: prev?.startedAt ?? data.startedAt ?? lastTs,
+    ...keepCartFields(prev, {
+      cartItems: data.cartItems,
+      cartValue: data.cartValue,
+      email: data.email,
+      name: data.name,
+      phone: data.phone,
+      city: data.city,
+      state: data.state,
+      shipping: data.shipping,
+    }),
+  });
+}
+
+export async function pushLivePing(
+  raw: Record<string, unknown>,
+  ctx?: { waitUntil?: (job: Promise<unknown>) => void },
+) {
+  const sessionId = typeof raw.sessionId === "string" ? raw.sessionId.trim() : "";
+  const path = typeof raw.path === "string" ? raw.path : "";
+  if (!sessionId || !path || path.toLowerCase().startsWith("/admin")) return { ok: true };
+  const event =
+    raw.event && typeof raw.event === "object" && typeof (raw.event as AnalyticsEvent).id === "string"
+      ? (raw.event as AnalyticsEvent)
+      : undefined;
+  const visitor = visitorFromPing({
+    sessionId,
+    path,
+    title: typeof raw.title === "string" ? raw.title : undefined,
+    device: typeof raw.device === "string" ? raw.device : undefined,
+    attribution: (raw.attribution as Attribution) ?? event?.attribution,
+    lastEvent: typeof raw.lastEvent === "string" ? raw.lastEvent : event?.name,
+    lastTs: typeof raw.lastTs === "string" ? raw.lastTs : event?.ts,
+    startedAt: typeof raw.startedAt === "string" ? raw.startedAt : undefined,
+    cartItems: Array.isArray(raw.cartItems) ? (raw.cartItems as PresenceVisitor["cartItems"]) : undefined,
+    cartValue: typeof raw.cartValue === "number" ? raw.cartValue : undefined,
+    email: typeof raw.email === "string" ? raw.email : undefined,
+    name: typeof raw.name === "string" ? raw.name : undefined,
+    phone: typeof raw.phone === "string" ? raw.phone : undefined,
+    city: typeof raw.city === "string" ? raw.city : undefined,
+    state: typeof raw.state === "string" ? raw.state : undefined,
+    shipping: typeof raw.shipping === "string" ? raw.shipping : undefined,
+  });
+  store.presence.set(sessionId, visitor);
+  if (event?.id) {
+    const incoming = { ...event, sessionId, path: event.path || path } as AnalyticsEvent;
+    store.events = [...store.events.filter((item) => item.id !== incoming.id), incoming].slice(-MAX_EVENTS);
     if (incoming.name === "generate_pix" || incoming.name === "purchase") {
-      const stub = orderFromEvent(incoming, store.presence.get(incoming.sessionId));
+      const stub = orderFromEvent(incoming, visitor);
       if (stub) {
         upsertOrderLocal(stub);
         await persistTrafficShards({ order: stub });
       }
     }
-    const visitor = store.presence.get(incoming.sessionId);
     await persistTrafficShards({ event: incoming, visitor });
-    await persist();
+    await rememberLive({ visitor, event: incoming });
+  } else {
+    await persistTrafficShards({ visitor });
+    await rememberLive({ visitor });
+  }
+  persistSoon(ctx);
+  return { ok: true };
+}
+
+export async function handleLiveRequest(
+  request: Request,
+  ctx?: { waitUntil?: (job: Promise<unknown>) => void },
+) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "POST,OPTIONS",
+        "access-control-allow-headers": "content-type",
+      },
+    });
+  }
+  if (request.method !== "POST") {
+    return Response.json({ ok: false }, { status: 405 });
+  }
+  try {
+    const text = await request.text();
+    if (!text || text.length > 80_000) return Response.json({ ok: true });
+    const body = JSON.parse(text) as Record<string, unknown>;
+    await pushLivePing(body, ctx);
+    return Response.json({ ok: true });
+  } catch {
+    return Response.json({ ok: true });
+  }
+}
+
+export const ingestStoreEvent = createServerFn({ method: "POST" })
+  .validator(eventSchema)
+  .handler(async ({ data }) => {
+    if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
+    const device = data.device === "desktop" || data.device === "tablet" ? data.device : "mobile";
+    const incoming = { ...data, device, attribution: data.attribution ?? {} } as AnalyticsEvent;
+    const fromProps = cartFromProps(incoming.props);
+    const visitor = visitorFromPing({
+      sessionId: incoming.sessionId,
+      path: incoming.path,
+      title: incoming.title,
+      device,
+      attribution: incoming.attribution,
+      lastEvent: incoming.name,
+      lastTs: incoming.ts,
+      startedAt: incoming.ts,
+      cartItems: fromProps.cartItems,
+      cartValue: fromProps.cartValue,
+      email: textProp(incoming.props, "email"),
+      name: textProp(incoming.props, "name"),
+      phone: textProp(incoming.props, "phone"),
+      city: textProp(incoming.props, "city"),
+      state: textProp(incoming.props, "state"),
+      shipping: textProp(incoming.props, "shipping"),
+    });
+    store.events = [...store.events.filter((event) => event.id !== incoming.id), incoming].slice(-MAX_EVENTS);
+    store.presence.set(incoming.sessionId, visitor);
+    if (incoming.name === "generate_pix" || incoming.name === "purchase") {
+      const stub = orderFromEvent(incoming, visitor);
+      if (stub) {
+        upsertOrderLocal(stub);
+        await persistTrafficShards({ order: stub });
+      }
+    }
+    await persistTrafficShards({ event: incoming, visitor });
+    await rememberLive({ visitor, event: incoming });
+    persistSoon();
     return { ok: true };
   });
 
 export const heartbeatVisitor = createServerFn({ method: "POST" })
   .validator(presenceSchema)
   .handler(async ({ data }) => {
-    await hydrate();
     if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
-    const prev = store.presence.get(data.sessionId);
-    const lastEvent =
-      data.lastEvent === "heartbeat" && prev?.lastEvent && prev.lastEvent !== "heartbeat"
-        ? prev.lastEvent
-        : data.lastEvent;
-    const device = data.device === "desktop" || data.device === "tablet" ? data.device : "mobile";
-    store.presence.set(
-      data.sessionId,
-      mergeVisitor(prev, {
-        sessionId: data.sessionId,
-        path: data.path,
-        title: data.title,
-        device,
-        attribution: data.attribution ?? {},
-        lastEvent,
-        lastTs: new Date().toISOString(),
-        startedAt: prev?.startedAt ?? new Date().toISOString(),
-        ...keepCartFields(prev, {
-          cartItems: data.cartItems,
-          cartValue: data.cartValue,
-          email: data.email,
-          name: data.name,
-          phone: data.phone,
-          city: data.city,
-          state: data.state,
-          shipping: data.shipping,
-        }),
-      }),
-    );
-    await persistTrafficShards({ visitor: store.presence.get(data.sessionId) });
-    await persist();
-    await refreshPendingPix();
+    const visitor = visitorFromPing(data);
+    store.presence.set(data.sessionId, visitor);
+    await persistTrafficShards({ visitor });
+    await rememberLive({ visitor });
+    persistSoon();
     return { ok: true };
   });
 

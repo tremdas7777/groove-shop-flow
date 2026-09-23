@@ -44,9 +44,22 @@ function isH3SwallowedErrorBody(body: string): boolean {
   }
 }
 
+function waitUntilFrom(ctx: unknown) {
+  if (ctx && typeof ctx === "object" && "waitUntil" in ctx) {
+    const waitUntil = (ctx as { waitUntil?: (job: Promise<unknown>) => void }).waitUntil;
+    if (typeof waitUntil === "function") return { waitUntil: waitUntil.bind(ctx) };
+  }
+  return undefined;
+}
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/live") {
+        const { handleLiveRequest } = await import("./lib/admin-api");
+        return await handleLiveRequest(request, waitUntilFrom(ctx));
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

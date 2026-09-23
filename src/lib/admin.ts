@@ -393,21 +393,29 @@ export interface FunnelStep {
 }
 
 export function buildFunnel(events: AnalyticsEvent[], orders: OrderSummary[]): FunnelStep[] {
-  const start = uniqueSessions(events);
+  const paidOrders = orders.filter((order) => orderStatus(order) === "paid").length;
+  const purchase = Math.max(sessionsWith(events, "purchase"), paidOrders);
+  const pix = Math.max(sessionsWith(events, "generate_pix"), orders.length, purchase);
+  const shipping = Math.max(sessionsWith(events, "checkout_shipping"), pix);
+  const identify = Math.max(sessionsWith(events, "checkout_identify"), shipping);
+  const checkout = Math.max(sessionsWith(events, "begin_checkout"), identify);
+  const cart = Math.max(
+    sessionsWith(events, "view_cart"),
+    sessionsWith(events, "add_to_cart"),
+    checkout,
+  );
+  const product = Math.max(sessionsWith(events, "view_item"), cart);
+  const start = Math.max(uniqueSessions(events), pix);
   const steps = [
     { id: "sessions", label: "Visitantes", count: start },
-    { id: "view_item", label: "Viram produto", count: sessionsWith(events, "view_item") },
-    { id: "add_to_cart", label: "Adicionaram à sacola", count: sessionsWith(events, "add_to_cart") },
-    { id: "view_cart", label: "Abriram a sacola", count: sessionsWith(events, "view_cart") },
-    { id: "begin_checkout", label: "Iniciaram checkout", count: sessionsWith(events, "begin_checkout") },
-    { id: "checkout_identify", label: "Identificação", count: sessionsWith(events, "checkout_identify") },
-    { id: "checkout_shipping", label: "Entrega", count: sessionsWith(events, "checkout_shipping") },
-    { id: "generate_pix", label: "PIX gerado", count: sessionsWith(events, "generate_pix") || orders.length },
-    {
-      id: "purchase",
-      label: "Pagaram",
-      count: sessionsWith(events, "purchase") || orders.filter((order) => orderStatus(order) === "paid").length,
-    },
+    { id: "view_item", label: "Viram produto", count: product },
+    { id: "add_to_cart", label: "Adicionaram à sacola", count: cart },
+    { id: "view_cart", label: "Abriram a sacola", count: cart },
+    { id: "begin_checkout", label: "Iniciaram checkout", count: checkout },
+    { id: "checkout_identify", label: "Identificação", count: identify },
+    { id: "checkout_shipping", label: "Entrega", count: shipping },
+    { id: "generate_pix", label: "PIX gerado", count: pix },
+    { id: "purchase", label: "Pagaram", count: purchase },
   ];
 
   return steps.map((step, index) => {

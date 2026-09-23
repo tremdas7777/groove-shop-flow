@@ -1629,8 +1629,8 @@ export async function commitStoreOrder(order: OrderSummary, notify = false) {
   const next = store.orders.find((item) => item.id === order.id) ?? order;
   if (notify) {
     try {
-      const nextStatus = next.status ?? next.pix?.status ?? "pending";
-      const prevStatus = prev?.status ?? prev?.pix?.status;
+      const nextStatus = next.status === "paid" || next.pix?.status === "paid" ? "paid" : next.status ?? "pending";
+      const prevStatus = prev?.status === "paid" || prev?.pix?.status === "paid" ? "paid" : prev?.status;
       await notifyUtmfy(next);
       if (!prev) {
         if (nextStatus === "paid") {

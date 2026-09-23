@@ -60,18 +60,13 @@ function apiUrl() {
 }
 
 function normalizeStatus(status: unknown): PixStatus {
-  const value = String(status ?? "").toLowerCase();
-  if (["paid", "approved", "authorized", "complete", "completed"].includes(value)) {
-    return "paid";
-  }
+  const value = String(status ?? "").toLowerCase().trim();
+  if (value === "paid" || value === "pago") return "paid";
   if (["refused", "rejected", "failed", "canceled", "cancelled"].includes(value)) {
     return "refused";
   }
   if (["refunded", "chargedback"].includes(value)) return "refunded";
-  if (["pending", "waiting_payment", "waiting", "processing", "created"].includes(value)) {
-    return "pending";
-  }
-  return value ? "unknown" : "pending";
+  return "pending";
 }
 
 function gatewayTitle(title: string) {

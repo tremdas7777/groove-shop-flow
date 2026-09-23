@@ -285,8 +285,6 @@ export function firePixels(event: AnalyticsEvent) {
     add_to_cart: "AddToCart",
     view_cart: "AddToCart",
     begin_checkout: "InitiateCheckout",
-    checkout_identify: "InitiateCheckout",
-    checkout_payment: "AddPaymentInfo",
     generate_pix: "AddPaymentInfo",
     purchase: "Purchase",
     search: "Search",
@@ -323,8 +321,6 @@ export function firePixels(event: AnalyticsEvent) {
     add_to_cart: "AddToCart",
     view_cart: "AddToCart",
     begin_checkout: "InitiateCheckout",
-    checkout_identify: "InitiateCheckout",
-    checkout_payment: "AddPaymentInfo",
     generate_pix: "PlaceAnOrder",
     purchase: "CompletePayment",
     search: "Search",
@@ -354,14 +350,6 @@ export function firePixels(event: AnalyticsEvent) {
       content_name: contentName || undefined,
       event_id: String(event.props?.event_id ?? event.props?.order_id ?? event.id),
     });
-    if (event.name === "generate_pix") {
-      trackTikTok("AddPaymentInfo", {
-        value: value || undefined,
-        currency,
-        contents,
-        event_id: `${event.props?.order_id ?? event.id}-pay`,
-      });
-    }
   }
 
   const gMap: Record<string, string> = {

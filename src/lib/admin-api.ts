@@ -250,8 +250,10 @@ store.utmfyClaims ??= new Map();
 
 let persistChain: Promise<void> = Promise.resolve();
 
+const DEFAULT_ADMIN_PIN = "Pala10@";
+
 function envPin() {
-  return process.env.ADMIN_PIN ?? "";
+  return (process.env.ADMIN_PIN ?? DEFAULT_ADMIN_PIN).trim() || DEFAULT_ADMIN_PIN;
 }
 
 async function sha256(value: string) {
@@ -658,15 +660,8 @@ async function hydrate() {
     }
     mergePersisted(data);
   }
-  if (!store.pinHash) {
-    const pinned = await getShard<{ pinHash?: string }>("https://asics-admin.internal/pin");
-    if (pinned?.pinHash) store.pinHash = pinned.pinHash;
-  }
-  if (!store.pinHash && envPin()) {
-    store.pinHash = await sha256(envPin());
-    store.settings.hasPin = true;
-  }
-  store.settings.hasPin = Boolean(store.pinHash);
+  store.pinHash = await sha256(envPin());
+  store.settings.hasPin = true;
   await loadUtmfyToken();
   mergeUtmfy(store.settings.utmfy);
   ensureTikTokFromEnv();
@@ -713,11 +708,8 @@ function pinTokenOf(hash: string) {
 }
 
 async function ensurePinHash() {
-  if (store.pinHash) return store.pinHash;
-  if (envPin()) {
-    store.pinHash = await sha256(envPin());
-    store.settings.hasPin = true;
-  }
+  store.pinHash = await sha256(envPin());
+  store.settings.hasPin = true;
   return store.pinHash;
 }
 
@@ -725,13 +717,7 @@ async function requireSession(token?: string) {
   if (token?.startsWith("pin_") && /^pin_[a-f0-9]{64}$/.test(token)) {
     const incoming = token.slice(4);
     const expected = await ensurePinHash();
-    if (expected && incoming === expected) return;
-    if (!expected) {
-      store.pinHash = incoming;
-      store.settings.hasPin = true;
-      await putShard("https://asics-admin.internal/pin", { pinHash: incoming });
-      return;
-    }
+    if (incoming === expected) return;
   }
   store.sessions = store.sessions.filter((session) => session.expiresAt > Date.now());
   if (token && store.sessions.some((session) => session.token === token)) return;
@@ -1652,42 +1638,31 @@ export const upsertStoreOrder = createServerFn({ method: "POST" })
 export const adminStatus = createServerFn({ method: "GET" }).handler(async () => {
   await hydrate();
   await ensurePinHash();
-  return { hasPin: Boolean(store.pinHash || envPin()) };
+  return { hasPin: true };
 });
+
+async function signInWithPin(pin: string) {
+  await hydrate();
+  const hash = await sha256(pin);
+  const expected = await ensurePinHash();
+  if (hash !== expected) throw new Error("Senha incorreta.");
+  store.pinHash = expected;
+  store.settings.hasPin = true;
+  const token = pinTokenOf(expected);
+  const session = { token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 };
+  store.sessions.push(session);
+  await persistTrafficShards({ session });
+  await persist();
+  return { token };
+}
 
 export const adminSetup = createServerFn({ method: "POST" })
   .validator(z.object({ pin: z.string().min(4).max(32) }))
-  .handler(async ({ data }) => {
-    await hydrate();
-    if (store.pinHash) throw new Error("A senha do admin já foi definida.");
-    store.pinHash = await sha256(data.pin);
-    store.settings.hasPin = true;
-    const token = pinTokenOf(store.pinHash);
-    const session = { token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 };
-    store.sessions.push(session);
-    await persistTrafficShards({ session });
-    await putShard("https://asics-admin.internal/pin", { pinHash: store.pinHash });
-    await persist();
-    return { token };
-  });
+  .handler(async ({ data }) => signInWithPin(data.pin));
 
 export const adminLogin = createServerFn({ method: "POST" })
   .validator(z.object({ pin: z.string().min(4).max(32) }))
-  .handler(async ({ data }) => {
-    await hydrate();
-    const hash = await sha256(data.pin);
-    const expected = (await ensurePinHash()) || store.pinHash;
-    if (!expected) throw new Error("Crie a senha do admin primeiro.");
-    if (hash !== expected) throw new Error("Senha incorreta.");
-    store.pinHash = expected;
-    store.settings.hasPin = true;
-    const token = pinTokenOf(expected);
-    const session = { token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 };
-    store.sessions.push(session);
-    await persistTrafficShards({ session });
-    await persist();
-    return { token };
-  });
+  .handler(async ({ data }) => signInWithPin(data.pin));
 
 export const getAdminSnapshot = createServerFn({ method: "POST" })
   .validator(z.object({ token: z.string(), utmfyToken: z.string().optional() }))
@@ -1749,10 +1724,7 @@ export const changeAdminPin = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await hydrate();
     await requireSession(data.token);
-    if ((await sha256(data.current)) !== store.pinHash) throw new Error("Senha atual incorreta.");
-    store.pinHash = await sha256(data.next);
-    await persist();
-    return { ok: true };
+    throw new Error("A senha do painel é única e não pode ser trocada por aqui.");
   });
 
 export const updateAdminOrder = createServerFn({ method: "POST" })

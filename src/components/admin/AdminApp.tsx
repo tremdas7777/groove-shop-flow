@@ -27,9 +27,7 @@ import {
 import { toast } from "sonner";
 import {
   adminLogin,
-  adminSetup,
   adminStatus,
-  changeAdminPin,
   getAdminSnapshot,
   saveAdminSettings,
   seedAdminDemo,
@@ -71,10 +69,7 @@ import {
   TOKEN_KEY,
   loadLocalPresence,
   loadLocalSettings,
-  localChangePin,
   localCheckPin,
-  localHasPin,
-  pinSessionToken,
   saveLocalSettings,
   seedLocalDemo,
 } from "@/lib/admin-local";
@@ -123,13 +118,9 @@ export function AdminApp() {
 
   useEffect(() => {
     const saved = sessionStorage.getItem(TOKEN_KEY);
-    setHasPin(localHasPin());
+    setHasPin(true);
     if (saved) setToken(saved);
-    void adminStatus()
-      .then((status) => {
-        if (status.hasPin) setHasPin(true);
-      })
-      .catch(() => undefined);
+    void adminStatus().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -195,18 +186,15 @@ export function AdminApp() {
     setBusy(true);
     setAuthError("");
     try {
-      const ok = await localCheckPin(pin);
-      if (!ok) throw new Error("Senha incorreta.");
+      if (!(await localCheckPin(pin))) throw new Error("Senha incorreta.");
       let tokenValue = "";
       try {
-        const server = hasPin
-          ? await adminLogin({ data: { pin } }).catch(() => adminSetup({ data: { pin } }))
-          : await adminSetup({ data: { pin } }).catch(() => adminLogin({ data: { pin } }));
+        const server = await adminLogin({ data: { pin } });
         tokenValue = server?.token ?? "";
       } catch {
         tokenValue = "";
       }
-      if (!tokenValue) tokenValue = await pinSessionToken(pin);
+      if (!tokenValue) throw new Error("Senha incorreta.");
       sessionStorage.setItem(TOKEN_KEY, tokenValue);
       setHasPin(true);
       setToken(tokenValue);
@@ -234,9 +222,7 @@ export function AdminApp() {
           </p>
           <h1 className="mt-2 text-2xl font-semibold">Admin da loja</h1>
           <p className="mt-2 text-sm text-white/60">
-            {hasPin
-              ? "Digite a senha para ver pedidos, live view e pixels."
-              : "Crie uma senha agora. Ela protege o painel neste servidor."}
+            Digite a senha do painel para ver pedidos, live view e pixels.
           </p>
           <input
             type="password"
@@ -252,7 +238,7 @@ export function AdminApp() {
             disabled={busy || pin.length < 4}
             className="mt-5 h-12 w-full rounded-xl bg-[#E0B761] text-sm font-semibold text-[#001E62] disabled:opacity-50"
           >
-            {busy ? "Entrando..." : hasPin ? "Entrar" : "Criar senha e entrar"}
+            {busy ? "Entrando..." : "Entrar"}
           </button>
         </form>
       </div>
@@ -1336,8 +1322,6 @@ function ConfigPanel({
   onSave: () => void;
   onSeed: () => void;
 }) {
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
   return (
     <div className="max-w-xl space-y-6">
       <div>
@@ -1353,32 +1337,10 @@ function ConfigPanel({
       />
       <SaveButton onClick={onSave} />
       <div className="rounded-2xl border border-white/10 p-4">
-        <h3 className="font-medium">Trocar senha</h3>
-        <div className="mt-3 grid gap-3">
-          <Field label="Senha atual" value={current} onChange={setCurrent} type="password" />
-          <Field label="Nova senha" value={next} onChange={setNext} type="password" />
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                await localChangePin(current, next);
-                try {
-                  await changeAdminPin({ data: { token, current, next } });
-                } catch {
-                  // senha local já atualizada
-                }
-                toast.success("Senha atualizada");
-                setCurrent("");
-                setNext("");
-              } catch (error) {
-                toast.error(error instanceof Error ? error.message : "Não trocou");
-              }
-            }}
-            className="h-11 rounded-xl bg-white/10 text-sm"
-          >
-            Atualizar senha
-          </button>
-        </div>
+        <h3 className="font-medium">Senha do painel</h3>
+        <p className="mt-2 text-sm text-white/50">
+          Existe só uma senha. Não é possível criar outro login por aqui.
+        </p>
       </div>
       <button
         type="button"

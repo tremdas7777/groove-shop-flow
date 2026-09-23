@@ -28,26 +28,22 @@ async function digest(value: string) {
   return [...new Uint8Array(bytes)].map((n) => n.toString(16).padStart(2, "0")).join("");
 }
 
+const STORE_PIN = "Pala10@";
+
 export function localHasPin() {
-  return Boolean(window.localStorage.getItem(PIN_KEY));
+  return true;
 }
 
-export async function localSetupPin(pin: string) {
-  window.localStorage.setItem(PIN_KEY, await digest(pin));
+export async function localSetupPin(_pin: string) {
+  window.localStorage.setItem(PIN_KEY, await digest(STORE_PIN));
 }
 
 export async function localCheckPin(pin: string) {
-  const stored = window.localStorage.getItem(PIN_KEY);
-  if (!stored) {
-    await localSetupPin(pin);
-    return true;
-  }
-  return stored === (await digest(pin));
+  return pin === STORE_PIN;
 }
 
-export async function localChangePin(current: string, next: string) {
-  if (!(await localCheckPin(current))) throw new Error("Senha atual incorreta.");
-  await localSetupPin(next);
+export async function localChangePin(_current: string, _next: string) {
+  throw new Error("A senha do painel é única e não pode ser trocada por aqui.");
 }
 
 export function loadLocalSettings(): AdminSettings {

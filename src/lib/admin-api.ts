@@ -198,6 +198,7 @@ function compactLiveBus(bus: LiveBus): LiveBus {
         lastTs: visitor.lastTs,
         startedAt: visitor.startedAt,
         cartValue: visitor.cartValue,
+        cartItems: visitor.cartItems,
         email: visitor.email,
         name: visitor.name,
         phone: visitor.phone,

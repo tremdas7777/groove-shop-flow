@@ -1,18 +1,22 @@
 import { useMemo, useState } from "react";
 import { Monitor, Smartphone, Tablet } from "lucide-react";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   JOURNEY_STEPS,
+  LIVE_WINDOWS,
   buildLiveSessions,
   eventLabel,
+  inLiveWindow,
   journeyNextLabel,
   money,
   pageLabel,
   relativeTime,
   sessionDuration,
   sourceLabel,
+  summarizeLiveWindow,
   type AdminSnapshot,
   type LiveSession,
-  type Period,
+  type LiveWindowId,
 } from "@/lib/admin";
 import type { OrderSummary } from "@/lib/checkout";
 import { cn } from "@/lib/utils";
@@ -46,103 +50,191 @@ export function LiveView({
   visitors,
   events,
   orders,
-  period,
 }: {
   visitors: AdminSnapshot["visitors"];
   events: AdminSnapshot["events"];
   orders: OrderSummary[];
-  period: Period;
 }) {
+  const [windowId, setWindowId] = useState<LiveWindowId>("30m");
   const [filter, setFilter] = useState<StageFilter>("todos");
   const [openId, setOpenId] = useState<string | null>(null);
   const sessions = useMemo(
-    () => buildLiveSessions(events, orders, visitors, Date.now(), period),
-    [events, orders, visitors, period],
+    () => buildLiveSessions(events, orders, visitors),
+    [events, orders, visitors],
   );
-  const visible = sessions.filter((session) => matchesFilter(session, filter));
-  const online = sessions.filter((session) => session.online);
-  const counts = {
-    online: online.length,
-    product: sessions.filter((session) => session.stepIndex === 1).length,
-    cart: sessions.filter((session) => session.stepIndex === 2).length,
-    checkout: sessions.filter((session) => session.stepIndex >= 3 && session.stepIndex <= 5).length,
-    pix: sessions.filter((session) => session.stepIndex >= 6 && session.step.id !== "paid").length,
-  };
-  const feed = [...events].reverse().slice(0, 80);
+  const windows = LIVE_WINDOWS.map((item) => ({
+    ...item,
+    stats: summarizeLiveWindow(sessions, item.ms),
+  }));
+  const selected = windows.find((item) => item.id === windowId) ?? windows[windows.length - 1];
+  const scoped = selected.stats.sessions;
+  const visible = scoped.filter((session) => matchesFilter(session, filter));
+  const checkoutNow = visible.filter(
+    (session) => session.online && session.stepIndex >= 3 && session.stepIndex <= 6,
+  );
+  const others = visible.filter((session) => !checkoutNow.some((item) => item.sessionId === session.sessionId));
+  const stats = selected.stats;
+  const chart = windows.map((item) => ({
+    janela: item.label,
+    visitantes: item.stats.visitors,
+    online: item.stats.online,
+    checkout: item.stats.checkout,
+    pix: item.stats.pix,
+  }));
+  const feed = [...events]
+    .filter((event) => inLiveWindow(event.ts, selected.ms))
+    .reverse()
+    .slice(0, 40);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold">Live view</h2>
-        <p className="text-sm text-white/50">
-          O fluxo inteiro fica salvo por até 60 dias. Use o período no topo para ver hoje, 7 dias, 30
-          dias ou tudo. Quem está na loja agora aparece como online; o restante é histórico.
-        </p>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <LiveStat label="Online agora" value={String(counts.online)} tone="emerald" />
-        <LiveStat label="Pararam no produto" value={String(counts.product)} />
-        <LiveStat label="Pararam na sacola" value={String(counts.cart)} />
-        <LiveStat label="Pararam no checkout" value={String(counts.checkout)} />
-        <LiveStat label="PIX sem pagar" value={String(counts.pix)} tone="gold" />
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {filters.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => setFilter(item.id)}
-            className={cn(
-              "rounded-full px-3 py-1.5 text-xs",
-              filter === item.id ? "bg-white text-[#070b14]" : "bg-white/8 text-white/65 hover:bg-white/12",
-            )}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <section className="space-y-3">
-          {visible.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-white/10 px-4 py-10 text-sm text-white/40">
-              Ninguém neste recorte. Troque o período no topo ou abra a loja em outra aba.
-            </div>
-          )}
-          {visible.map((session) => (
-            <VisitorCard
-              key={session.sessionId}
-              session={session}
-              open={openId === session.sessionId}
-              onToggle={() => setOpenId((prev) => (prev === session.sessionId ? null : session.sessionId))}
-            />
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-xl font-semibold">Live view geral</h2>
+          <p className="text-sm text-white/50">Últimos {selected.label} na loja.</p>
+        </div>
+        <div className="flex flex-wrap gap-1.5 rounded-full bg-white/6 p-1">
+          {windows.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setWindowId(item.id)}
+              className={cn(
+                "rounded-full px-3 py-1.5 text-xs font-semibold",
+                item.id === windowId ? "bg-[#E0B761] text-[#001E62]" : "text-white/65 hover:bg-white/8",
+              )}
+            >
+              {item.label}
+            </button>
           ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <Kpi label="Online agora" value={stats.online} tone="emerald" />
+        <Kpi label="Na loja" value={stats.visitors} />
+        <Kpi label="Com dados" value={stats.leads} tone="gold" />
+        <Kpi label="No checkout" value={stats.checkout} />
+        <Kpi label="PIX sem pagar" value={stats.pix} tone="gold" className="col-span-2 lg:col-span-1" />
+      </div>
+
+      <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+        <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-white/40">
+          Comparativo 5 · 10 · 15 · 30 min
+        </p>
+        <div className="h-44">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              data={chart}
+              barGap={2}
+              onClick={(state) => {
+                const label = String(state?.activeLabel ?? "");
+                const match = LIVE_WINDOWS.find((item) => item.label === label);
+                if (match) setWindowId(match.id);
+              }}
+            >
+              <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+              <XAxis dataKey="janela" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+              <YAxis stroke="#94a3b8" fontSize={12} allowDecimals={false} tickLine={false} axisLine={false} width={28} />
+              <Tooltip
+                cursor={{ fill: "rgba(255,255,255,0.04)" }}
+                contentStyle={{
+                  background: "#10182a",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: 12,
+                }}
+              />
+              <Bar dataKey="visitantes" name="Na loja" fill="#7dd3fc" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="online" name="Online" fill="#6ee7b7" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="checkout" name="Checkout" fill="#E0B761" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="pix" name="PIX" fill="#fde68a" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
+        <section>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white">
+              Pessoas
+              <span className="ml-2 font-normal text-white/40">
+                {visible.length} neste recorte
+              </span>
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {filters.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setFilter(item.id)}
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-[11px]",
+                    filter === item.id ? "bg-white text-[#070b14]" : "bg-white/8 text-white/60 hover:bg-white/12",
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-3">
+            {visible.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-white/10 px-4 py-10 text-sm text-white/40">
+                Ninguém neste recorte. Troque para 15 ou 30 min.
+              </div>
+            )}
+            {checkoutNow.length > 0 && (
+              <div className="space-y-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-[#E0B761]">
+                  No checkout agora
+                </p>
+                {checkoutNow.map((session) => (
+                  <VisitorCard
+                    key={session.sessionId}
+                    session={session}
+                    open={openId === session.sessionId}
+                    onToggle={() => setOpenId((prev) => (prev === session.sessionId ? null : session.sessionId))}
+                    highlight
+                  />
+                ))}
+              </div>
+            )}
+            {others.map((session) => (
+              <VisitorCard
+                key={session.sessionId}
+                session={session}
+                open={openId === session.sessionId}
+                onToggle={() => setOpenId((prev) => (prev === session.sessionId ? null : session.sessionId))}
+              />
+            ))}
+          </div>
         </section>
 
         <section>
-          <h3 className="text-sm font-medium text-white/70">Atividade em tempo real</h3>
-          <div className="mt-3 space-y-2">
+          <h3 className="mb-3 text-sm font-semibold text-white">Atividade</h3>
+          <div className="space-y-2">
             {feed.length === 0 && (
               <div className="rounded-xl border border-dashed border-white/10 px-4 py-8 text-sm text-white/40">
                 Os cliques da loja aparecem aqui.
               </div>
             )}
             {feed.map((event) => (
-              <div key={event.id} className="rounded-xl border border-white/8 bg-white/4 px-3 py-2.5">
+              <div key={event.id} className="rounded-xl border border-white/8 bg-[#10182a] px-3 py-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium text-[#E0B761]">{eventLabel(event.name)}</span>
-                  <span className="text-[11px] text-white/40">{relativeTime(event.ts)}</span>
+                  <span className="shrink-0 text-[11px] text-white/40">{relativeTime(event.ts)}</span>
                 </div>
-                <p className="mt-0.5 text-xs text-white/50">
-                  {pageLabel(event.path)}
-                  {event.props?.["name"] ? ` · ${String(event.props["name"])}` : ""}
-                  {event.props?.["email"] ? ` · ${String(event.props["email"])}` : ""}
-                  {event.props?.["phone"] ? ` · ${String(event.props["phone"])}` : ""}
-                  {event.props?.["content_name"] ? ` · ${String(event.props["content_name"])}` : ""}
-                  {` · ${event.device} · ${sourceLabel(event.attribution)}`}
+                <p className="mt-0.5 text-xs text-white/70">
+                  {typeof event.props?.name === "string" && event.props.name
+                    ? event.props.name
+                    : pageLabel(event.path)}
                 </p>
+                {(event.props?.email || event.props?.phone) && (
+                  <p className="mt-0.5 text-xs text-white/50">
+                    {[event.props?.email, event.props?.phone].filter(Boolean).join(" · ")}
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -152,21 +244,23 @@ export function LiveView({
   );
 }
 
-function LiveStat({
+function Kpi({
   label,
   value,
   tone,
+  className,
 }: {
   label: string;
-  value: string;
+  value: number;
   tone?: "emerald" | "gold";
+  className?: string;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
-      <p className="text-[11px] uppercase tracking-wide text-white/45">{label}</p>
+    <div className={cn("rounded-2xl border border-white/10 bg-[#10182a] px-4 py-4", className)}>
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-white/40">{label}</p>
       <p
         className={cn(
-          "mt-2 text-2xl font-semibold tracking-tight",
+          "mt-2 text-3xl font-semibold tracking-tight",
           tone === "emerald" && "text-emerald-300",
           tone === "gold" && "text-[#E0B761]",
         )}
@@ -181,17 +275,27 @@ function VisitorCard({
   session,
   open,
   onToggle,
+  highlight,
 }: {
   session: LiveSession;
   open: boolean;
   onToggle: () => void;
+  highlight?: boolean;
 }) {
-  const progress = ((session.stepIndex + 1) / JOURNEY_STEPS.length) * 100;
+  const inCheckout = session.stepIndex >= 3 && session.stepIndex <= 6;
+  const showBag = Boolean(session.cartItems?.length) || inCheckout;
+  const contact = [session.email, session.phone].filter(Boolean).join(" · ");
+  const place = [session.city, session.state].filter(Boolean).join(" / ");
   return (
     <button
       type="button"
       onClick={onToggle}
-      className="w-full rounded-2xl border border-white/10 bg-[#10182a] p-4 text-left transition hover:border-white/20"
+      className={cn(
+        "w-full rounded-2xl border p-4 text-left transition",
+        highlight
+          ? "border-[#E0B761]/50 bg-[#E0B761]/8 hover:border-[#E0B761]/70"
+          : "border-white/10 bg-[#10182a] hover:border-white/20",
+      )}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -209,81 +313,75 @@ function VisitorCard({
               {session.step.short}
             </span>
           </div>
-          <p className="mt-2 truncate font-medium">
-            {session.identity || pageLabel(session.path)}
+          <p className="mt-2 truncate text-lg font-semibold">
+            {session.identity || (inCheckout ? "Digitando no checkout" : "Visitante")}
           </p>
-          {session.identity && (
-            <p className="mt-0.5 truncate text-xs text-white/50">{pageLabel(session.path)}</p>
+          {contact ? (
+            <p className="mt-1 truncate text-sm text-white/90">{contact}</p>
+          ) : (
+            <p className="mt-1 text-sm text-white/35">Ainda sem e-mail ou telefone</p>
           )}
-          {session.productName && session.stepIndex > 0 && (
-            <p className="mt-0.5 truncate text-xs text-white/50">{session.productName}</p>
-          )}
-          {(session.email || session.phone) && (
-            <p className="mt-1 truncate text-xs text-white/75">
-              {[session.email, session.phone].filter(Boolean).join(" · ")}
-            </p>
-          )}
-          {(session.city || session.state) && (
-            <p className="truncate text-xs text-white/40">
-              {[session.city, session.state].filter(Boolean).join(" / ")}
-            </p>
-          )}
-          <p className="mt-1 text-xs text-white/40">
-            {sourceLabel(session.attribution)}
-            {session.attribution.utm_campaign ? ` · ${session.attribution.utm_campaign}` : ""}
-          </p>
+          {place && <p className="mt-0.5 truncate text-xs text-white/50">{place}</p>}
         </div>
-        <div className="shrink-0 text-right text-xs text-white/50">
-          <p className="inline-flex items-center gap-1 capitalize">
+        <div className="shrink-0 text-right">
+          {session.value ? <p className="text-lg font-semibold text-[#E0B761]">{money(session.value)}</p> : null}
+          <p className="mt-1 text-xs text-white/50">{relativeTime(session.lastTs)}</p>
+          <p className="mt-1 inline-flex items-center gap-1 text-xs capitalize text-white/40">
             <DeviceIcon device={session.device} /> {session.device}
           </p>
-          <p className="mt-1">{relativeTime(session.lastTs)}</p>
-          {session.value ? <p className="mt-1 text-white/70">{money(session.value)}</p> : null}
         </div>
       </div>
 
-      <JourneyTrack stepIndex={session.stepIndex} />
-
-      <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-white/45">
-        <span>
-          {eventLabel(session.lastEvent)} · {Math.round(progress)}% da jornada
-        </span>
-        <span>{sessionDuration(session.startedAt, session.lastTs)} na loja</span>
-      </div>
-      {session.step.id !== "paid" && (
-        <p className="mt-1 text-[11px] text-white/35">Próximo: {journeyNextLabel(session.stepIndex).toLowerCase()}</p>
+      {showBag && (
+        <div className="mt-3 space-y-2 border-t border-white/8 pt-3">
+          {(session.cartItems ?? []).map((item, index) => (
+            <div key={`${item.id}-${item.size}-${index}`} className="flex items-center gap-3">
+              {item.photo ? (
+                <img src={item.photo} alt="" className="h-12 w-12 rounded-lg object-cover" />
+              ) : (
+                <span className="h-12 w-12 rounded-lg bg-white/8" />
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-white">{item.title}</p>
+                <p className="text-[11px] text-white/45">
+                  {item.qty}x{item.size ? ` · Tam. ${item.size}` : ""} · {money(item.price)}
+                </p>
+              </div>
+              <p className="shrink-0 text-sm font-medium text-white">{money(item.price * item.qty)}</p>
+            </div>
+          ))}
+          {session.value ? (
+            <div className="flex items-center justify-between pt-1 text-sm">
+              <span className="text-white/50">Total</span>
+              <span className="font-semibold text-[#E0B761]">{money(session.value)}</span>
+            </div>
+          ) : null}
+        </div>
       )}
 
       {open && (
-        <ol className="mt-4 space-y-2 border-t border-white/8 pt-3">
-          {(session.identity || session.email || session.phone) && (
-            <li className="rounded-xl bg-white/6 px-3 py-2 text-xs text-white/80">
-              <span className="block text-[10px] font-semibold uppercase tracking-wide text-[#E0B761]">
-                Dados digitados
-              </span>
-              {session.identity && <span className="mt-1 block">{session.identity}</span>}
-              {session.email && <span className="block text-white/65">{session.email}</span>}
-              {session.phone && <span className="block text-white/65">{session.phone}</span>}
-              {(session.city || session.state) && (
-                <span className="block text-white/45">
-                  {[session.city, session.state].filter(Boolean).join(" / ")}
-                </span>
-              )}
-            </li>
-          )}
-          {session.events.length === 0 && (
-            <li className="text-xs text-white/40">Ainda sem eventos desta sessão.</li>
-          )}
-          {[...session.events].reverse().slice(0, 12).map((event) => (
-            <li key={event.id} className="flex items-start justify-between gap-3 text-xs">
-              <span>
+        <div className="mt-4 space-y-3 border-t border-white/8 pt-3">
+          <JourneyTrack stepIndex={session.stepIndex} />
+          <p className="text-[11px] text-white/40">
+            {eventLabel(session.lastEvent)} · {sessionDuration(session.startedAt, session.lastTs)} na loja
+            {session.step.id !== "paid" ? ` · próximo: ${journeyNextLabel(session.stepIndex).toLowerCase()}` : ""}
+          </p>
+          <p className="text-[11px] text-white/35">
+            {sourceLabel(session.attribution)}
+            {session.attribution.utm_campaign ? ` · ${session.attribution.utm_campaign}` : ""}
+          </p>
+          <ol className="space-y-2">
+            {session.events.length === 0 && (
+              <li className="text-xs text-white/40">Ainda sem eventos desta sessão.</li>
+            )}
+            {[...session.events].reverse().slice(0, 8).map((event) => (
+              <li key={event.id} className="flex items-start justify-between gap-3 text-xs">
                 <span className="text-white/80">{eventLabel(event.name)}</span>
-                <span className="mt-0.5 block text-white/40">{pageLabel(event.path)}</span>
-              </span>
-              <span className="shrink-0 text-white/35">{relativeTime(event.ts)}</span>
-            </li>
-          ))}
-        </ol>
+                <span className="shrink-0 text-white/35">{relativeTime(event.ts)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
       )}
     </button>
   );

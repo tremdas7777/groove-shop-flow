@@ -397,7 +397,7 @@ export function AdminApp() {
               />
             )}
             {tab === "live" && (
-              <LiveView visitors={visitors} events={scopedEvents} orders={scopedOrders} period={period} />
+              <LiveView visitors={visitors} events={events} orders={orders} />
             )}
             {tab === "pedidos" && (
               <OrdersPanel

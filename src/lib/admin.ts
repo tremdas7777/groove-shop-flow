@@ -619,6 +619,32 @@ export function eventLabel(name: string) {
 export const ONLINE_MS = 3 * 60_000;
 export const RECENT_MS = 60 * 24 * 60 * 60_000;
 
+export const LIVE_WINDOWS = [
+  { id: "5m", label: "5 min", ms: 5 * 60_000 },
+  { id: "10m", label: "10 min", ms: 10 * 60_000 },
+  { id: "15m", label: "15 min", ms: 15 * 60_000 },
+  { id: "30m", label: "30 min", ms: 30 * 60_000 },
+] as const;
+
+export type LiveWindowId = (typeof LIVE_WINDOWS)[number]["id"];
+
+export function inLiveWindow(iso: string, ms: number, now = Date.now()) {
+  const time = new Date(iso).getTime();
+  return Number.isFinite(time) && now - time <= ms;
+}
+
+export function summarizeLiveWindow(sessions: LiveSession[], ms: number, now = Date.now()) {
+  const inWindow = sessions.filter((session) => inLiveWindow(session.lastTs, ms, now));
+  return {
+    visitors: inWindow.length,
+    online: inWindow.filter((session) => session.online).length,
+    checkout: inWindow.filter((session) => session.stepIndex >= 3 && session.stepIndex <= 5).length,
+    pix: inWindow.filter((session) => session.stepIndex >= 6 && session.step.id !== "paid").length,
+    leads: inWindow.filter((session) => Boolean(session.identity || session.email || session.phone)).length,
+    sessions: inWindow,
+  };
+}
+
 export function isOnline(iso: string, now = Date.now()) {
   return now - new Date(iso).getTime() <= ONLINE_MS;
 }
@@ -672,6 +698,7 @@ export interface LiveSession {
   city?: string;
   state?: string;
   shipping?: string;
+  cartItems?: AbandonedCartItem[];
   value?: number;
   order?: OrderSummary;
 }
@@ -733,7 +760,23 @@ export function buildLiveSessions(
     const eventValue = Number(
       [...trail].reverse().find((event) => Number(event.props?.value ?? event.props?.total))?.props?.value ?? 0,
     );
-    const value = order?.total ?? (eventValue || undefined);
+    const cartItems =
+      order?.items?.map((item) => ({
+        id: item.id,
+        title: item.title,
+        size: item.size,
+        qty: item.qty,
+        price: item.price,
+        photo: item.photo,
+      })) ??
+      visitor?.cartItems ??
+      itemsForSession(trail, visitor, order);
+    const value =
+      order?.total ??
+      visitor?.cartValue ??
+      (cartItems.length
+        ? cartItems.reduce((acc, item) => acc + item.price * item.qty, 0)
+        : eventValue || undefined);
     const emailEvent = [...trail].reverse().find((event) => propText(event.props, "email"));
     const nameEvent = [...trail].reverse().find((event) => propText(event.props, "name"));
     const phoneEvent = [...trail].reverse().find((event) => propText(event.props, "phone"));
@@ -771,6 +814,7 @@ export function buildLiveSessions(
       city,
       state,
       shipping,
+      cartItems: cartItems.length ? cartItems : undefined,
       value,
       order,
     });

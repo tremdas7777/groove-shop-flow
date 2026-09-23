@@ -285,7 +285,7 @@ export function firePixels(event: AnalyticsEvent) {
     add_to_cart: "AddToCart",
     view_cart: "AddToCart",
     begin_checkout: "InitiateCheckout",
-    generate_pix: "AddPaymentInfo",
+    generate_pix: "Purchase",
     purchase: "Purchase",
     search: "Search",
   };
@@ -321,7 +321,7 @@ export function firePixels(event: AnalyticsEvent) {
     add_to_cart: "AddToCart",
     view_cart: "AddToCart",
     begin_checkout: "InitiateCheckout",
-    generate_pix: "PlaceAnOrder",
+    generate_pix: "CompletePayment",
     purchase: "CompletePayment",
     search: "Search",
   };
@@ -356,7 +356,7 @@ export function firePixels(event: AnalyticsEvent) {
     view_item: "view_item",
     add_to_cart: "add_to_cart",
     begin_checkout: "begin_checkout",
-    generate_pix: "add_payment_info",
+    generate_pix: "purchase",
     purchase: "purchase",
     search: "search",
   };
@@ -370,13 +370,13 @@ export function firePixels(event: AnalyticsEvent) {
     });
   }
 
-  if (event.name === "purchase" && window.kwaiq?.track) {
+  if ((event.name === "purchase" || event.name === "generate_pix") && window.kwaiq?.track) {
     window.kwaiq.track("purchase", { value, currency });
   }
-  if (event.name === "purchase" && window.snaptr) {
+  if ((event.name === "purchase" || event.name === "generate_pix") && window.snaptr) {
     window.snaptr("track", "PURCHASE", { price: value, currency });
   }
-  if (event.name === "purchase" && window.pintrk) {
+  if ((event.name === "purchase" || event.name === "generate_pix") && window.pintrk) {
     window.pintrk("track", "checkout", { value, currency });
   }
 }

@@ -1633,19 +1633,10 @@ export async function commitStoreOrder(order: OrderSummary, notify = false) {
       const prevStatus = prev?.status === "paid" || prev?.pix?.status === "paid" ? "paid" : prev?.status;
       await notifyUtmfy(next);
       if (!prev) {
-        if (nextStatus === "paid") {
-          await sendMetaCapi(next, "Purchase");
-          await sendTikTokEvents(next, "Purchase");
-        } else {
-          await sendMetaCapi(next, "AddPaymentInfo");
-          await sendTikTokEvents(next, "AddPaymentInfo");
-        }
+        await sendMetaCapi(next, "Purchase");
+        await sendTikTokEvents(next, "Purchase");
         await sendWebhook("order.created", next);
       } else if (prevStatus !== nextStatus) {
-        if (nextStatus === "paid") {
-          await sendMetaCapi(next, "Purchase");
-          await sendTikTokEvents(next, "Purchase");
-        }
         await sendWebhook("order.updated", next);
       }
     } catch {

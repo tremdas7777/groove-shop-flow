@@ -60,6 +60,10 @@ export default {
         const { handleLiveRequest } = await import("./lib/admin-api");
         return await handleLiveRequest(request, waitUntilFrom(ctx));
       }
+      if (url.pathname === "/api/admin-login" && request.method === "POST") {
+        const { handleAdminLogin } = await import("./lib/admin-api");
+        return await handleAdminLogin(request);
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

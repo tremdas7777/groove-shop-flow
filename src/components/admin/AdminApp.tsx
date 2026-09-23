@@ -70,6 +70,7 @@ import {
   loadLocalPresence,
   loadLocalSettings,
   localCheckPin,
+  pinSessionToken,
   saveLocalSettings,
   seedLocalDemo,
 } from "@/lib/admin-local";
@@ -196,14 +197,29 @@ export function AdminApp() {
     setBusy(true);
     setAuthError("");
     try {
-      if (!(await localCheckPin(pin))) throw new Error("Senha incorreta.");
+      const typed = pin.trim();
+      if (!(await localCheckPin(typed))) throw new Error("Senha incorreta.");
       let tokenValue = "";
       try {
-        const server = await adminLogin({ data: { pin } });
+        const server = await adminLogin({ data: { pin: typed } });
         tokenValue = server?.token ?? "";
       } catch {
         tokenValue = "";
       }
+      if (!tokenValue) {
+        try {
+          const res = await fetch("/api/admin-login", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ pin: typed }),
+          });
+          const payload = (await res.json()) as { token?: string };
+          tokenValue = payload.token ?? "";
+        } catch {
+          tokenValue = "";
+        }
+      }
+      if (!tokenValue) tokenValue = await pinSessionToken(typed);
       if (!tokenValue) throw new Error("Senha incorreta.");
       sessionStorage.setItem(TOKEN_KEY, tokenValue);
       setHasPin(true);

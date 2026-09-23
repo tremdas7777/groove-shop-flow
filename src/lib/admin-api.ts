@@ -1972,8 +1972,23 @@ async function signInWithPin(pin: string) {
   const session = { token, expiresAt: Date.now() + 1000 * 60 * 60 * 12 };
   store.sessions.push(session);
   await persistTrafficShards({ session });
-  await persist();
+  persistSoon();
   return { token };
+}
+
+export async function handleAdminLogin(request: Request) {
+  try {
+    const body = (await request.json()) as { pin?: unknown };
+    const pin = typeof body.pin === "string" ? body.pin.trim() : "";
+    if (pin.length < 4 || pin.length > 32) {
+      return Response.json({ error: "Senha incorreta." }, { status: 401 });
+    }
+    const result = await signInWithPin(pin);
+    return Response.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Senha incorreta.";
+    return Response.json({ error: message }, { status: 401 });
+  }
 }
 
 export const adminSetup = createServerFn({ method: "POST" })

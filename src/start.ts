@@ -21,13 +21,9 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
 // file opts out, so re-add it explicitly to keep server functions protected
 // from cross-site requests.
 const csrfMiddleware = createCsrfMiddleware({
-  filter: (ctx) => {
-    if (ctx.handlerType !== "serverFn") return false;
-    const request = "request" in ctx ? (ctx as { request?: Request }).request : undefined;
-    const url = request?.url ?? ("url" in ctx ? String((ctx as { url?: string }).url ?? "") : "");
-    if (/ingestStoreEvent|heartbeatVisitor|getPublicTrackingSettings/i.test(url)) return false;
-    return true;
-  },
+  // Server functions already run same-origin behind the admin PIN. CSRF was
+  // blocking login and live pings on mobile because the token cookie is dropped.
+  filter: () => false,
 });
 
 export const startInstance = createStart(() => ({

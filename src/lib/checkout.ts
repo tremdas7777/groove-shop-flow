@@ -234,6 +234,10 @@ export function updateOrderPix(pix: OrderPix) {
     pix: { ...order.pix, ...pix },
     status: paid ? "paid" : order.status ?? (pix.status === "unknown" ? "pending" : pix.status),
   };
+  const sameStatus = (order.pix?.status ?? order.status ?? "pending") === (paid ? "paid" : pix.status);
+  if (!paid && sameStatus && String(order.pix?.transactionId ?? "") === String(pix.transactionId ?? "")) {
+    return next;
+  }
   void persistOrder(next);
   return next;
 }

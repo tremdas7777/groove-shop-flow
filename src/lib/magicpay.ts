@@ -270,6 +270,10 @@ function orderStatusFromPix(status: PixStatus): NonNullable<OrderSummary["status
   return "pending";
 }
 
+export async function getMagicPayTransaction(transactionId: string | number) {
+  return magicPayFetch(`/v1/transactions/${encodeURIComponent(String(transactionId))}`);
+}
+
 export async function listMagicPayTransactions() {
   const rows: Record<string, unknown>[] = [];
   let page = 1;

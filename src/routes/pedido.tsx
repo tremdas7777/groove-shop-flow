@@ -62,10 +62,17 @@ function OrderPage() {
     };
 
     void poll();
-    const id = window.setInterval(() => void poll(), 4000);
+    const id = window.setInterval(() => void poll(), 1000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void poll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     };
   }, [order?.pix?.transactionId, order?.pix?.status, navigate]);
 

@@ -342,7 +342,13 @@ async function rememberUtmfyToken(token?: string) {
   await putShard(UTMIFY_TOKEN_URL, { apiToken: token.trim() });
 }
 
+function applyUtmfyTokenNow() {
+  mergeUtmfy({ apiToken: envUtmfyToken() || store.settings.utmfy.apiToken });
+}
+
 async function loadUtmfyToken() {
+  applyUtmfyTokenNow();
+  if (hasSecret(envUtmfyToken()) || hasSecret(store.settings.utmfy.apiToken)) return;
   const pinned = await getShard<{ apiToken?: string }>(UTMIFY_TOKEN_URL);
   mergeUtmfy({ apiToken: pinned?.apiToken ?? "" });
 }
@@ -801,7 +807,8 @@ function utmfyCreatedAtFor(order: OrderSummary) {
 }
 
 async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid" | "refused" | "refunded") {
-  await loadUtmfyToken();
+  applyUtmfyTokenNow();
+  if (!hasSecret(store.settings.utmfy.apiToken)) await loadUtmfyToken();
   const token = store.settings.utmfy.apiToken;
   if (!hasSecret(token)) {
     store.utmfyLast = {
@@ -857,7 +864,8 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
   };
   if (store.settings.utmfy.testMode) payload.isTest = true;
 
-  for (let attempt = 0; attempt < 4; attempt++) {
+  const attempts = status === "waiting_payment" && utmfyStatusOf(order) === "paid" ? 2 : 4;
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const res = await fetch("https://api.utmify.com.br/api-credentials/orders", {
         method: "POST",
@@ -885,7 +893,9 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
         message: error instanceof Error ? error.message : "Falha ao enviar para a UTMify",
       };
     }
-    await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    if (attempt < attempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    }
   }
   return false;
 }
@@ -1307,10 +1317,53 @@ function ensureOrderTraffic(order: OrderSummary) {
 }
 
 let lastMagicSync = 0;
+let lastPendingRefresh = 0;
+
+function pendingPixOrders() {
+  return store.orders.filter((order) => {
+    if (!order.id || !/^PD/i.test(order.id)) return false;
+    if (utmfyStatusOf(order) === "paid") return false;
+    return Boolean(order.pix?.transactionId);
+  });
+}
+
+async function refreshPendingPix() {
+  const pending = pendingPixOrders();
+  if (!pending.length) return;
+  if (Date.now() - lastPendingRefresh < 2000) return;
+  lastPendingRefresh = Date.now();
+  try {
+    const { getMagicPayTransaction, orderFromMagicPayTx } = await import("@/lib/magicpay");
+    let changed = false;
+    for (const order of pending.slice(0, 8)) {
+      try {
+        const row = await getMagicPayTransaction(order.pix!.transactionId!);
+        const incoming = orderFromMagicPayTx(row);
+        if (!incoming) continue;
+        const merged = mergeOrders(order, incoming);
+        merged.attribution = resolveOrderAttribution(merged);
+        upsertOrderLocal(merged);
+        const saved = store.orders.find((item) => item.id === merged.id) ?? merged;
+        ensureOrderTraffic(saved);
+        if (utmfyStatusOf(saved) !== "waiting_payment" || !saved.utmfySent?.waiting_payment) {
+          await notifyUtmfy(saved);
+          changed = true;
+        }
+      } catch {
+        // próxima transação
+      }
+    }
+    if (changed) await persist();
+  } catch {
+    lastPendingRefresh = 0;
+  }
+}
 
 async function syncMagicPayOrders() {
+  const pending = pendingPixOrders().length > 0;
+  const wait = pending ? 6_000 : 20_000;
   const hasStoreOrders = store.orders.some((order) => /^PD/i.test(order.id));
-  if (hasStoreOrders && Date.now() - lastMagicSync < 15_000) return;
+  if (hasStoreOrders && Date.now() - lastMagicSync < wait) return;
   try {
     const { listMagicPayTransactions, orderFromMagicPayTx } = await import("@/lib/magicpay");
     const rows = await listMagicPayTransactions();
@@ -1351,35 +1404,37 @@ async function syncMagicPayOrders() {
 
 export async function commitStoreOrder(order: OrderSummary, notify = false) {
   await hydrate();
+  applyUtmfyTokenNow();
   const prev = store.orders.find((item) => item.id === order.id);
   upsertOrderLocal(order);
-  await persistTrafficShards({ order: store.orders.find((item) => item.id === order.id) ?? order });
-  await persist();
-  if (!notify) return store.orders.find((item) => item.id === order.id) ?? order;
   const next = store.orders.find((item) => item.id === order.id) ?? order;
-  try {
-    const nextStatus = next.status ?? next.pix?.status ?? "pending";
-    const prevStatus = prev?.status ?? prev?.pix?.status;
-    await notifyUtmfy(next);
-    if (!prev) {
-      if (nextStatus === "paid") {
-        await sendMetaCapi(next, "Purchase");
-        await sendTikTokEvents(next, "Purchase");
-      } else {
-        await sendMetaCapi(next, "AddPaymentInfo");
-        await sendTikTokEvents(next, "AddPaymentInfo");
+  if (notify) {
+    try {
+      const nextStatus = next.status ?? next.pix?.status ?? "pending";
+      const prevStatus = prev?.status ?? prev?.pix?.status;
+      await notifyUtmfy(next);
+      if (!prev) {
+        if (nextStatus === "paid") {
+          await sendMetaCapi(next, "Purchase");
+          await sendTikTokEvents(next, "Purchase");
+        } else {
+          await sendMetaCapi(next, "AddPaymentInfo");
+          await sendTikTokEvents(next, "AddPaymentInfo");
+        }
+        await sendWebhook("order.created", next);
+      } else if (prevStatus !== nextStatus) {
+        if (nextStatus === "paid") {
+          await sendMetaCapi(next, "Purchase");
+          await sendTikTokEvents(next, "Purchase");
+        }
+        await sendWebhook("order.updated", next);
       }
-      await sendWebhook("order.created", next);
-    } else if (prevStatus !== nextStatus) {
-      if (nextStatus === "paid") {
-        await sendMetaCapi(next, "Purchase");
-        await sendTikTokEvents(next, "Purchase");
-      }
-      await sendWebhook("order.updated", next);
+    } catch {
+      // PIX já existe; a gravação ainda tenta de novo
     }
-  } catch {
-    // pedido já está salvo; UTMify/CAPI não pode apagar
   }
+  await persistTrafficShards({ order: next });
+  await persist();
   return next;
 }
 
@@ -1497,6 +1552,7 @@ function keepCartFields(
 
 export const getPublicTrackingSettings = createServerFn({ method: "GET" }).handler(async () => {
   await hydrate();
+  await refreshPendingPix();
   return publicSettings();
 });
 
@@ -1582,6 +1638,7 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
     );
     await persistTrafficShards({ visitor: store.presence.get(data.sessionId) });
     await persist();
+    await refreshPendingPix();
     return { ok: true };
   });
 
@@ -1638,6 +1695,7 @@ export const getAdminSnapshot = createServerFn({ method: "POST" })
     await hydrate();
     await requireSession(data.token);
     if (data.utmfyToken) await rememberUtmfyToken(data.utmfyToken);
+    await refreshPendingPix();
     await syncMagicPayOrders();
     await flushUtmfyOrders();
     return snapshot();

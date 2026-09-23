@@ -106,44 +106,51 @@ function ThankYouPage() {
       upsell: true,
       parent_order_id: order.id,
     });
-    const result = await createMagicPayPix({
-      data: {
-        orderId,
-        amountCents: Math.round(kit.price * 100),
-        shippingCents: 0,
-        customer: {
-          name: order.data.name,
-          email: order.data.email,
-          phone: order.data.phone,
-          cpf: order.data.cpf,
-        },
-        address: {
-          street: order.data.street,
-          streetNumber: order.data.number,
-          neighborhood: order.data.neighborhood,
-          city: order.data.city,
-          state: order.data.state,
-          zipCode: order.data.cep,
-          complement: order.data.complement,
-        },
-        items: [
-          {
-            title: kit.title,
-            unitPrice: Math.round(kit.price * 100),
-            quantity: 1,
-            externalRef: String(kit.id),
+    try {
+      const result = await createMagicPayPix({
+        data: {
+          orderId,
+          amountCents: Math.round(kit.price * 100),
+          shippingCents: 0,
+          customer: {
+            name: order.data.name,
+            email: order.data.email,
+            phone: order.data.phone,
+            cpf: order.data.cpf,
           },
-        ],
-        order: upsellOrder,
-      },
-    });
-    setPaying(false);
-    if (!result.ok) {
-      setPayError(result.error || "Não gerou o PIX do kit. Tente de novo.");
-      return;
+          address: {
+            street: order.data.street,
+            streetNumber: order.data.number,
+            neighborhood: order.data.neighborhood,
+            city: order.data.city,
+            state: order.data.state,
+            zipCode: order.data.cep,
+            complement: order.data.complement,
+          },
+          items: [
+            {
+              title: kit.title,
+              unitPrice: Math.round(kit.price * 100),
+              quantity: 1,
+              externalRef: String(kit.id),
+            },
+          ],
+          order: upsellOrder,
+        },
+      });
+      if (!result.ok) {
+        setPayError(result.error || "Não gerou o PIX do kit. Tente de novo.");
+        return;
+      }
+      await persistOrder({ ...upsellOrder, pix: result.pix, status: "pending" }, true);
+      void navigate({ to: "/pedido" });
+    } catch (error) {
+      setPayError(
+        error instanceof Error ? error.message : "Não gerou o PIX do kit. Tente de novo.",
+      );
+    } finally {
+      setPaying(false);
     }
-    await persistOrder({ ...upsellOrder, pix: result.pix, status: "pending" }, true);
-    void navigate({ to: "/pedido" });
   };
 
   return (

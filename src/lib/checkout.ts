@@ -203,15 +203,17 @@ export async function persistOrder(order: OrderSummary, notify = true) {
     status: order.status ?? (order.pix?.status === "paid" ? "paid" : "pending"),
   };
   saveOrder(next);
-  for (let attempt = 0; attempt < 6; attempt++) {
-    try {
-      const { upsertStoreOrder } = await import("@/lib/admin-api");
-      await upsertStoreOrder({ data: { order: next, notify } });
-      return next;
-    } catch {
-      if (attempt < 5) await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
+  void (async () => {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        const { upsertStoreOrder } = await import("@/lib/admin-api");
+        await upsertStoreOrder({ data: { order: next, notify } });
+        return;
+      } catch {
+        if (attempt < 5) await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
+      }
     }
-  }
+  })();
   return next;
 }
 

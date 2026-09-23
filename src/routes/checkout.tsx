@@ -211,47 +211,55 @@ function CheckoutPage() {
         attribution: getAttribution(),
         sessionId: getSessionId(),
       };
-      const result = await createMagicPayPix({
-        data: {
-          orderId,
-          amountCents,
-          shippingCents,
-          customer: {
-            name: checkoutData.name,
-            email: checkoutData.email,
-            phone: checkoutData.phone,
-            cpf: checkoutData.cpf,
+      try {
+        const result = await createMagicPayPix({
+          data: {
+            orderId,
+            amountCents,
+            shippingCents,
+            customer: {
+              name: checkoutData.name,
+              email: checkoutData.email,
+              phone: checkoutData.phone,
+              cpf: checkoutData.cpf,
+            },
+            address: {
+              street: checkoutData.street,
+              streetNumber: checkoutData.number,
+              neighborhood: checkoutData.neighborhood,
+              city: checkoutData.city,
+              state: checkoutData.state,
+              zipCode: checkoutData.cep,
+              complement: checkoutData.complement,
+            },
+            items: pixItems,
+            order: pendingOrder,
           },
-          address: {
-            street: checkoutData.street,
-            streetNumber: checkoutData.number,
-            neighborhood: checkoutData.neighborhood,
-            city: checkoutData.city,
-            state: checkoutData.state,
-            zipCode: checkoutData.cep,
-            complement: checkoutData.complement,
-          },
-          items: pixItems,
-          order: pendingOrder,
-        },
-      });
-      setPaying(false);
-      if (!result.ok) {
-        setPayError(result.error);
+        });
+        if (!result.ok) {
+          setPayError(result.error);
+          return;
+        }
+        await persistOrder({ ...pendingOrder, pix: result.pix });
+        track("generate_pix", {
+          order_id: orderId,
+          value: total,
+          content_ids: orderItems.map((item) => String(item.id)),
+          email: checkoutData.email,
+          name: checkoutData.name,
+          phone: checkoutData.phone,
+          city: checkoutData.city,
+          state: checkoutData.state,
+          shipping: checkoutData.shippingMethod,
+        });
+      } catch (error) {
+        setPayError(
+          error instanceof Error ? error.message : "Não foi possível gerar o PIX. Tente de novo.",
+        );
         return;
+      } finally {
+        setPaying(false);
       }
-      await persistOrder({ ...pendingOrder, pix: result.pix });
-      track("generate_pix", {
-        order_id: orderId,
-        value: total,
-        content_ids: orderItems.map((item) => String(item.id)),
-        email: checkoutData.email,
-        name: checkoutData.name,
-        phone: checkoutData.phone,
-        city: checkoutData.city,
-        state: checkoutData.state,
-        shipping: checkoutData.shippingMethod,
-      });
     } else {
       await persistOrder(order);
     }

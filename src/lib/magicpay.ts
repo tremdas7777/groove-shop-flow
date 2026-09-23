@@ -104,15 +104,28 @@ async function magicPayFetch(path: string, init?: RequestInit) {
       "Configure MAGICPAY_PUBLIC_KEY e MAGICPAY_SECRET_KEY no ambiente.",
     );
   }
-  const res = await fetch(`${apiUrl()}${path}`, {
-    ...init,
-    headers: {
-      Authorization: authorization,
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  let res: Response;
+  try {
+    res = await fetch(`${apiUrl()}${path}`, {
+      ...init,
+      signal: ctrl.signal,
+      headers: {
+        Authorization: authorization,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("A MagicPay demorou demais para gerar o PIX. Tente de novo.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const message =
@@ -181,12 +194,11 @@ export const createMagicPayPix = createServerFn({ method: "POST" })
         };
       }
       if (data.order) {
-        try {
-          const { commitStoreOrder } = await import("@/lib/admin-api");
-          await commitStoreOrder({ ...data.order, pix, status: data.order.status ?? "pending" }, true);
-        } catch {
-          // PIX já foi gerado; o cliente tenta gravar de novo
-        }
+        void import("@/lib/admin-api")
+          .then(({ commitStoreOrder }) =>
+            commitStoreOrder({ ...data.order!, pix, status: data.order?.status ?? "pending" }, true),
+          )
+          .catch(() => undefined);
       }
       return { ok: true as const, pix };
     } catch (error) {

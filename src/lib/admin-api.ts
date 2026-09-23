@@ -220,14 +220,28 @@ function liveRemoteUrl() {
   return (process.env.ADMIN_LIVE_URL ?? "").trim();
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit | undefined, ms: number) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function readRemoteLiveBus(): Promise<LiveBus | null> {
   const urls = [liveRemoteUrl(), `${LIVE_REMOTE_GET}?t=${Date.now()}`].filter(Boolean);
   for (const url of urls) {
     try {
-      const res = await fetch(url, {
-        headers: { Accept: "application/json", "Cache-Control": "no-store" },
-        cache: "no-store",
-      });
+      const res = await fetchWithTimeout(
+        url,
+        {
+          headers: { Accept: "application/json", "Cache-Control": "no-store" },
+          cache: "no-store",
+        },
+        1200,
+      );
       if (!res.ok) continue;
       const parsed = parseRemoteLiveBus(await res.json());
       if (parsed) return parsed;

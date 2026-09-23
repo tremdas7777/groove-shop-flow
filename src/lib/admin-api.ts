@@ -38,6 +38,10 @@ const SESSION_PREFIX = "https://asics-admin.internal/session/";
 const UTMIFY_PREFIX = "https://asics-admin.internal/utmfy/";
 const UTMIFY_TOKEN_URL = "https://asics-admin.internal/utmfy-token";
 const LIVE_BUS_URL = "https://asics-admin.internal/live-bus";
+const LIVE_PUBLIC_URL = "https://outletasics.lovable.app/api/live-bus";
+const LIVE_REMOTE_KEY = "asicsLv7k2m9q4x1c8p5w3n6h0b";
+const LIVE_REMOTE_SET = `https://setget.net/set/${LIVE_REMOTE_KEY}`;
+const LIVE_REMOTE_GET = `https://setget.net/get/${LIVE_REMOTE_KEY}`;
 
 type UtmfyStatus = "waiting_payment" | "paid" | "refused" | "refunded";
 type UtmfySent = NonNullable<OrderSummary["utmfySent"]>;
@@ -175,6 +179,89 @@ function unionLiveBus(left: LiveBus, right: LiveBus): LiveBus {
   };
 }
 
+function compactLiveBus(bus: LiveBus): LiveBus {
+  const cutoff = Date.now() - 20 * 60_000;
+  return {
+    visitors: bus.visitors
+      .filter((visitor) => {
+        const ts = new Date(visitor.lastTs).getTime();
+        return Number.isFinite(ts) && ts >= cutoff;
+      })
+      .slice(0, 50)
+      .map((visitor) => ({
+        sessionId: visitor.sessionId,
+        path: visitor.path,
+        title: visitor.title,
+        device: visitor.device,
+        attribution: visitor.attribution ?? {},
+        lastEvent: visitor.lastEvent,
+        lastTs: visitor.lastTs,
+        startedAt: visitor.startedAt,
+        cartValue: visitor.cartValue,
+      })),
+    events: [],
+    writtenAt: bus.writtenAt,
+  };
+}
+
+function parseRemoteLiveBus(payload: unknown): LiveBus | null {
+  const root = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+  const raw = root && "value" in root ? root.value : payload;
+  const data = typeof raw === "string" ? (JSON.parse(raw) as LiveBus) : (raw as LiveBus);
+  if (!data || !Array.isArray(data.visitors)) return null;
+  return {
+    visitors: data.visitors.filter((visitor) => visitor?.sessionId && visitor.lastTs),
+    events: Array.isArray(data.events) ? data.events : [],
+    writtenAt: Number(data.writtenAt) || 0,
+  };
+}
+
+function liveRemoteUrl() {
+  return (process.env.ADMIN_LIVE_URL ?? "").trim();
+}
+
+async function readRemoteLiveBus(): Promise<LiveBus | null> {
+  const urls = [liveRemoteUrl(), `${LIVE_REMOTE_GET}?t=${Date.now()}`].filter(Boolean);
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        headers: { Accept: "application/json", "Cache-Control": "no-store" },
+        cache: "no-store",
+      });
+      if (!res.ok) continue;
+      const parsed = parseRemoteLiveBus(await res.json());
+      if (parsed) return parsed;
+    } catch {
+      // próximo store
+    }
+  }
+  return null;
+}
+
+async function writeRemoteLiveBus(bus: LiveBus) {
+  const body = JSON.stringify(compactLiveBus(bus));
+  const custom = liveRemoteUrl();
+  const targets = custom
+    ? [{ url: custom, method: "PUT" as const }]
+    : [{ url: LIVE_REMOTE_SET, method: "POST" as const }];
+  await Promise.race([
+    Promise.all(
+      targets.map(async (target) => {
+        try {
+          await fetch(target.url, {
+            method: target.method,
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body,
+          });
+        } catch {
+          // store remoto opcional
+        }
+      }),
+    ),
+    new Promise((resolve) => setTimeout(resolve, 2000)),
+  ]);
+}
+
 async function readLiveBus(): Promise<LiveBus> {
   const parts: LiveBus[] = [];
   try {
@@ -183,29 +270,34 @@ async function readLiveBus(): Promise<LiveBus> {
   } catch {
     // sem arquivo
   }
-  try {
-    const shard = await getShard<LiveBus>(LIVE_BUS_URL);
-    if (shard?.visitors || shard?.events) parts.push(shard);
-  } catch {
-    // isolate sem cache
+  for (const url of [LIVE_PUBLIC_URL, LIVE_BUS_URL]) {
+    try {
+      const shard = await getShard<LiveBus>(url);
+      if (shard?.visitors || shard?.events) parts.push(shard);
+    } catch {
+      // isolate sem cache
+    }
   }
+  const remote = await readRemoteLiveBus();
+  if (remote) parts.push(remote);
   if (!parts.length) return emptyLiveBus();
   return parts.reduce((acc, part) => unionLiveBus(acc, part));
 }
 
 async function writeLiveBus(bus: LiveBus) {
-  const next = { ...bus, writtenAt: Date.now() };
-  const body = JSON.stringify(next);
+  const next = compactLiveBus({ ...bus, writtenAt: Date.now() });
   try {
     const { mkdir, writeFile } = await import("node:fs/promises");
     const { dirname } = await import("node:path");
     const path = liveBusPath();
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, body);
+    await writeFile(path, JSON.stringify({ ...bus, writtenAt: next.writtenAt }));
   } catch {
     // ambiente sem disco
   }
   await putShard(LIVE_BUS_URL, next);
+  await putShard(LIVE_PUBLIC_URL, next);
+  await writeRemoteLiveBus(next);
 }
 
 function applyLiveToStore(bus: LiveBus) {
@@ -1774,9 +1866,20 @@ export async function handleLiveRequest(
       status: 204,
       headers: {
         "access-control-allow-origin": "*",
-        "access-control-allow-methods": "POST,OPTIONS",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
         "access-control-allow-headers": "content-type",
       },
+    });
+  }
+  if (request.method === "GET") {
+    await mergeLiveBusIntoStore();
+    return Response.json({
+      ok: true,
+      visitors: compactLiveBus({
+        visitors: [...store.presence.values()],
+        events: [],
+        writtenAt: Date.now(),
+      }).visitors,
     });
   }
   if (request.method !== "POST") {

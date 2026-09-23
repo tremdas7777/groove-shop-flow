@@ -56,7 +56,7 @@ export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
       const url = new URL(request.url);
-      if (url.pathname === "/api/live") {
+      if (url.pathname === "/api/live" || url.pathname === "/api/live-bus") {
         const { handleLiveRequest } = await import("./lib/admin-api");
         return await handleLiveRequest(request, waitUntilFrom(ctx));
       }

@@ -145,6 +145,16 @@ export function AdminApp() {
           },
         });
         if (cancelled) return;
+        const live = await fetch(`/api/live?t=${Date.now()}`, { cache: "no-store" })
+          .then((res) => (res.ok ? res.json() : null))
+          .catch(() => null);
+        const liveVisitors = Array.isArray(live?.visitors) ? live.visitors : [];
+        for (const visitor of liveVisitors) {
+          if (!visitor?.sessionId) continue;
+          const index = next.visitors.findIndex((item) => item.sessionId === visitor.sessionId);
+          if (index === -1) next.visitors.push(visitor);
+          else if (visitor.lastTs > next.visitors[index].lastTs) next.visitors[index] = { ...next.visitors[index], ...visitor };
+        }
         setServerHint(
           next.orders.some((order) => /^PD/i.test(order.id))
             ? ""

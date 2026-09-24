@@ -352,7 +352,7 @@ async function rememberLive(input: { visitor?: PresenceVisitor; event?: Analytic
       const merged = mergeVisitor(
         mergeVisitor(
           current.visitors.find((visitor) => visitor.sessionId === input.visitor!.sessionId),
-          store.presence.get(input.visitor.sessionId),
+          store.presence.get(input.visitor.sessionId) ?? ({} as PresenceVisitor),
         ),
         input.visitor,
       );
@@ -1473,7 +1473,7 @@ function mergeOrders(prev: OrderSummary | undefined, incoming: OrderSummary): Or
     ...incoming,
     data: { ...prev.data, ...incoming.data },
     items: incoming.items?.length ? incoming.items : prev.items,
-    pix: prev.pix || incoming.pix ? ({ ...prev.pix, ...incoming.pix } as PresenceVisitor["pix"]) : incoming.pix,
+    pix: prev.pix || incoming.pix ? ({ ...prev.pix, ...incoming.pix } as any) : incoming.pix,
     attribution: mergeAttribution(prev.attribution, incoming.attribution),
     sessionId: preferSession(prev.sessionId, incoming.sessionId),
     notes: incoming.notes || prev.notes,

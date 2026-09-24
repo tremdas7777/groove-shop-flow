@@ -605,7 +605,7 @@ async function saveSettings(
       },
     });
     setSettings(keepTypedSecrets(settings, next));
-    toast.success("Configurações salvas. Os pixels valem para todos os visitantes.");
+    toast.success("Configurações salvas. Gateway e pixels valem para todos os visitantes.");
   } catch {
     toast.success("Salvo neste navegador. Publique e configure o servidor para valer em todos os visitantes.");
   }
@@ -1385,7 +1385,8 @@ function ConfigPanel({
         <div>
           <h3 className="font-medium">Gateway de pagamento</h3>
           <p className="mt-1 text-sm text-white/50">
-            Escolha quem gera o PIX. Docs da Wappi:{" "}
+            Coloque as chaves uma vez e clique em Salvar — ficam gravadas no servidor para a loja
+            continuar vendendo. Docs da Wappi:{" "}
             <a
               className="underline text-[#E0B761]"
               href="https://app.wappibrasil.com.br/docs"
@@ -1429,6 +1430,10 @@ function ConfigPanel({
               onChange={(wappiApiUrl) => setPayment({ wappiApiUrl })}
               placeholder="https://api.wappibrasil.com.br"
             />
+            <p className="text-xs text-white/40">
+              Depois de Salvar, o PIX usa a Wappi em todo checkout. As chaves não são apagadas em
+              redeploy.
+            </p>
           </div>
         )}
         {payment.provider === "magicpay" && (

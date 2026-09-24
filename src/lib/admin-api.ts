@@ -10,6 +10,7 @@ import {
   tiktokCapiTargets,
   normalizePayment,
   normalizePixels,
+  preferFilledPayment,
   publicPixels,
   maskPixelSettings,
   type AdminSettings,
@@ -18,6 +19,7 @@ import {
   type PublicTrackingSettings,
 } from "@/lib/admin";
 import { resolveWappiCredentials } from "@/lib/payment-gateway";
+import { envWappiCredentials } from "@/lib/wappi";
 import { UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 import {
   customerFirstName,
@@ -40,6 +42,7 @@ const ORDER_PREFIX = "https://asics-admin.internal/order/";
 const SESSION_PREFIX = "https://asics-admin.internal/session/";
 const UTMIFY_PREFIX = "https://asics-admin.internal/utmfy/";
 const UTMIFY_TOKEN_URL = "https://asics-admin.internal/utmfy-token";
+const PAYMENT_URL = "https://asics-admin.internal/payment";
 const LIVE_BUS_URL = "https://asics-admin.internal/live-bus";
 const LIVE_PUBLIC_URL = "https://outletasics.lovable.app/api/live-bus";
 const LIVE_REMOTE_KEY = "asicsLv7k2m9q4x1c8p5w3n6h0b";
@@ -585,6 +588,45 @@ function ensureTrafficPixelsFromEnv() {
   ensurePixelFromEnv("tiktok", envTikTokPixel(), envTikTokToken());
 }
 
+function ensurePaymentFromEnv() {
+  const env = envWappiCredentials();
+  store.settings.payment = preferFilledPayment(
+    {
+      provider: store.settings.payment?.provider,
+      wappiPublicKey: env.publicKey,
+      wappiSecretKey: env.secretKey,
+      wappiApiUrl: env.apiUrl,
+    },
+    store.settings.payment,
+  );
+  const payment = store.settings.payment;
+  const wappiReady = Boolean(payment.wappiPublicKey.trim() && hasSecret(payment.wappiSecretKey));
+  const magicpayReady = Boolean(
+    (process.env.MAGICPAY_PUBLIC_KEY ?? "").trim() && (process.env.MAGICPAY_SECRET_KEY ?? "").trim(),
+  );
+  // Com Wappi pronta e sem MagicPay no ambiente, a loja vende pela Wappi.
+  if (wappiReady && !magicpayReady) {
+    store.settings.payment.provider = "wappi";
+  }
+}
+
+async function rememberPayment(payment?: AdminSettings["payment"]) {
+  const next = preferFilledPayment(payment, store.settings.payment);
+  store.settings.payment = next;
+  if (next.provider === "wappi" || next.wappiPublicKey.trim() || hasSecret(next.wappiSecretKey)) {
+    await putShard(PAYMENT_URL, next);
+  }
+}
+
+async function loadPaymentSettings() {
+  ensurePaymentFromEnv();
+  const pinned = await getShard<AdminSettings["payment"]>(PAYMENT_URL);
+  if (pinned) {
+    store.settings.payment = preferFilledPayment(pinned, store.settings.payment);
+  }
+  ensurePaymentFromEnv();
+}
+
 function mergeUtmfy(disk?: AdminSettings["utmfy"]) {
   const current = store.settings.utmfy ?? emptyUtmfy;
   const incoming = { ...emptyUtmfy, ...disk };
@@ -749,13 +791,7 @@ function mergePersisted(data: PersistedState) {
         ...data.settings,
         pixels: mergedPixels,
         utmfy: store.settings.utmfy,
-        payment: normalizePayment({
-          ...store.settings.payment,
-          ...data.settings.payment,
-          wappiSecretKey: hasSecret(data.settings.payment?.wappiSecretKey)
-            ? data.settings.payment.wappiSecretKey
-            : store.settings.payment?.wappiSecretKey || data.settings.payment?.wappiSecretKey || "",
-        }),
+        payment: preferFilledPayment(data.settings.payment, store.settings.payment),
         settingsAt: diskAt,
       };
     } else {
@@ -766,15 +802,11 @@ function mergePersisted(data: PersistedState) {
           ...data.settings,
           pixels: mergedPixels,
           utmfy: store.settings.utmfy,
-          payment: normalizePayment({
-            ...store.settings.payment,
-            ...data.settings.payment,
-            wappiSecretKey: hasSecret(data.settings.payment?.wappiSecretKey)
-              ? data.settings.payment.wappiSecretKey
-              : store.settings.payment?.wappiSecretKey || "",
-          }),
+          payment: preferFilledPayment(data.settings.payment, store.settings.payment),
           settingsAt: storeAt,
         };
+      } else if (data.settings.payment) {
+        store.settings.payment = preferFilledPayment(data.settings.payment, store.settings.payment);
       }
     }
     mergeUtmfy(data.settings.utmfy);
@@ -834,6 +866,7 @@ async function writeRemoteState(data: PersistedState) {
       method: "PUT",
       headers: remoteStateHeaders(),
       body: JSON.stringify({
+        settings: data.settings,
         events: data.events,
         orders: data.orders,
         presence: data.presence,
@@ -909,9 +942,16 @@ async function persist() {
       const next = keepRicherTraffic(serializeState(), disk);
       const mergedPixels = mergePixelLists(disk?.settings?.pixels, next.settings?.pixels);
       if (next.settings) next.settings.pixels = mergedPixels;
+      if (next.settings) {
+        next.settings.payment = preferFilledPayment(next.settings.payment, disk?.settings?.payment);
+        store.settings.payment = next.settings.payment;
+      }
       store.settings.pixels = mergedPixels;
       mergePersisted(next);
       await writePersisted(serializeState());
+      if (store.settings.payment) {
+        await putShard(PAYMENT_URL, store.settings.payment);
+      }
     } catch {
       // um isolate falhou: o próximo persist tenta de novo
     }
@@ -931,7 +971,7 @@ async function hydrate() {
         ...data.settings,
         pixels: normalizePixels(data.settings.pixels),
         utmfy: { ...emptyUtmfy, ...data.settings.utmfy },
-        payment: normalizePayment(data.settings.payment),
+        payment: preferFilledPayment(data.settings.payment, store.settings.payment),
       };
     }
     mergePersisted(data);
@@ -942,6 +982,7 @@ async function hydrate() {
   await loadUtmfyToken();
   mergeUtmfy(store.settings.utmfy);
   ensureTrafficPixelsFromEnv();
+  await loadPaymentSettings();
 }
 
 function publicSettings(): PublicTrackingSettings {
@@ -2147,6 +2188,15 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
       !incomingPayment.wappiSecretKey || incomingPayment.wappiSecretKey.includes("•")
         ? store.settings.payment?.wappiSecretKey || ""
         : incomingPayment.wappiSecretKey;
+    const payment = preferFilledPayment(
+      {
+        ...incomingPayment,
+        wappiSecretKey: keepWappiSecret,
+        wappiPublicKey:
+          incomingPayment.wappiPublicKey.trim() || store.settings.payment?.wappiPublicKey || "",
+      },
+      store.settings.payment,
+    );
     store.settings = {
       ...store.settings,
       storeName: data.settings.storeName,
@@ -2158,16 +2208,12 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
         pixelId: data.settings.utmfy.pixelId || UTMIFY_PIXEL_ID,
         enabled: data.settings.utmfy.enabled || hasSecret(keepToken),
       },
-      payment: {
-        ...incomingPayment,
-        wappiSecretKey: keepWappiSecret,
-        wappiPublicKey:
-          incomingPayment.wappiPublicKey.trim() || store.settings.payment?.wappiPublicKey || "",
-      },
+      payment,
       hasPin: Boolean(store.pinHash),
       settingsAt: Date.now(),
     };
     await rememberUtmfyToken(keepToken);
+    await rememberPayment(payment);
     await persist();
     return maskSettings();
   });

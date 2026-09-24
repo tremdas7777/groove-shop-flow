@@ -438,6 +438,25 @@ export function normalizePayment(payment?: Partial<PaymentGatewaySettings> | nul
   };
 }
 
+function paymentSecretFilled(value?: string) {
+  return Boolean(value?.trim() && !value.includes("•"));
+}
+
+/** Nunca apaga chaves Wappi já preenchidas com lista/objeto vazio. */
+export function preferFilledPayment(
+  incoming?: Partial<PaymentGatewaySettings> | null,
+  previous?: Partial<PaymentGatewaySettings> | null,
+): PaymentGatewaySettings {
+  const next = normalizePayment(incoming);
+  const prev = normalizePayment(previous);
+  return {
+    provider: incoming?.provider === "wappi" || incoming?.provider === "magicpay" ? next.provider : prev.provider,
+    wappiPublicKey: next.wappiPublicKey.trim() || prev.wappiPublicKey,
+    wappiSecretKey: paymentSecretFilled(next.wappiSecretKey) ? next.wappiSecretKey : prev.wappiSecretKey,
+    wappiApiUrl: next.wappiApiUrl.trim() || prev.wappiApiUrl,
+  };
+}
+
 export const defaultSettings: AdminSettings = {
   storeName: "ASICS Brasil",
   webhookUrl: "",

@@ -18,7 +18,7 @@ import {
   type CheckoutData,
   type OrderSummary,
 } from "@/lib/checkout";
-import { createMagicPayPix } from "@/lib/magicpay";
+import { createStorePix } from "@/lib/payment-gateway";
 import {
   formatBRL,
   getProduct,
@@ -239,7 +239,7 @@ function CheckoutPage() {
         sessionId: getSessionId(),
       };
       try {
-        const result = await createMagicPayPix({
+        const result = await createStorePix({
           data: {
             orderId,
             amountCents,
@@ -267,7 +267,11 @@ function CheckoutPage() {
           setPayError(result.error);
           return;
         }
-        await persistOrder({ ...pendingOrder, pix: result.pix });
+        await persistOrder({
+          ...pendingOrder,
+          pix: result.pix,
+          gateway: result.gateway,
+        });
         track("generate_pix", {
           order_id: orderId,
           event_id: `${orderId}-AddPaymentInfo`,

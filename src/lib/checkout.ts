@@ -100,6 +100,7 @@ export interface OrderSummary {
   parentOrderId?: string;
   upsell?: boolean;
   purchaseTracked?: boolean;
+  gateway?: "magicpay" | "wappi";
   pixelsSent?: {
     addPaymentInfo?: boolean;
     purchase?: boolean;

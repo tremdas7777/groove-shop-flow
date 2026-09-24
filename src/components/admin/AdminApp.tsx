@@ -493,6 +493,14 @@ function keepTypedSecrets(prev: AdminSettings, incoming: AdminSettings): AdminSe
       ...incoming.utmfy,
       apiToken: keepSecret(incoming.utmfy?.apiToken, prev.utmfy?.apiToken),
     },
+    payment: {
+      ...defaultSettings.payment,
+      ...incoming.payment,
+      wappiPublicKey: incoming.payment?.wappiPublicKey || prev.payment?.wappiPublicKey || "",
+      wappiSecretKey: keepSecret(incoming.payment?.wappiSecretKey, prev.payment?.wappiSecretKey),
+      wappiApiUrl: incoming.payment?.wappiApiUrl || prev.payment?.wappiApiUrl || defaultSettings.payment.wappiApiUrl,
+      provider: incoming.payment?.provider || prev.payment?.provider || "magicpay",
+    },
   };
 }
 
@@ -592,6 +600,7 @@ async function saveSettings(
           webhookUrl: settings.webhookUrl,
           pixels: settings.pixels,
           utmfy: settings.utmfy,
+          payment: settings.payment ?? defaultSettings.payment,
         },
       },
     });
@@ -1351,11 +1360,18 @@ function ConfigPanel({
   onSave: () => void;
   onSeed: () => void;
 }) {
+  const payment = settings.payment ?? defaultSettings.payment;
+  const setPayment = (partial: Partial<NonNullable<AdminSettings["payment"]>>) =>
+    onChange({
+      ...settings,
+      payment: { ...payment, ...partial },
+    });
+
   return (
     <div className="max-w-xl space-y-6">
       <div>
         <h2 className="text-xl font-semibold">Configurações</h2>
-        <p className="text-sm text-white/50">Nome da loja, webhook e senha do painel.</p>
+        <p className="text-sm text-white/50">Gateway de PIX, nome da loja e webhook.</p>
       </div>
       <Field label="Nome da loja no admin" value={settings.storeName} onChange={(storeName) => onChange({ ...settings, storeName })} />
       <Field
@@ -1364,6 +1380,64 @@ function ConfigPanel({
         onChange={(webhookUrl) => onChange({ ...settings, webhookUrl })}
         placeholder="https://..."
       />
+
+      <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4 space-y-4">
+        <div>
+          <h3 className="font-medium">Gateway de pagamento</h3>
+          <p className="mt-1 text-sm text-white/50">
+            Escolha quem gera o PIX. Docs da Wappi:{" "}
+            <a
+              className="underline text-[#E0B761]"
+              href="https://app.wappibrasil.com.br/docs"
+              target="_blank"
+              rel="noreferrer"
+            >
+              app.wappibrasil.com.br/docs
+            </a>
+          </p>
+        </div>
+        <label className="block text-xs text-white/50">
+          Gateway ativo
+          <select
+            value={payment.provider}
+            onChange={(e) => setPayment({ provider: e.target.value as "magicpay" | "wappi" })}
+            className="mt-1 h-11 w-full rounded-xl border border-white/10 bg-black/30 px-3 text-sm text-white"
+          >
+            <option value="magicpay">MagicPay</option>
+            <option value="wappi">Wappi</option>
+          </select>
+        </label>
+        {payment.provider === "wappi" && (
+          <div className="space-y-3 border-t border-white/8 pt-3">
+            <Field
+              label="Wappi Public Key"
+              value={payment.wappiPublicKey}
+              onChange={(wappiPublicKey) => setPayment({ wappiPublicKey })}
+              placeholder="pk_..."
+            />
+            <Field
+              label="Wappi Secret Key"
+              value={payment.wappiSecretKey}
+              onChange={(wappiSecretKey) => setPayment({ wappiSecretKey })}
+              placeholder="sk_..."
+              type="password"
+              secret
+            />
+            <Field
+              label="Wappi API URL"
+              value={payment.wappiApiUrl}
+              onChange={(wappiApiUrl) => setPayment({ wappiApiUrl })}
+              placeholder="https://api.wappibrasil.com.br"
+            />
+          </div>
+        )}
+        {payment.provider === "magicpay" && (
+          <p className="text-xs text-white/40">
+            MagicPay usa as chaves do ambiente (MAGICPAY_PUBLIC_KEY / MAGICPAY_SECRET_KEY).
+          </p>
+        )}
+      </div>
+
       <SaveButton onClick={onSave} />
       <div className="rounded-2xl border border-white/10 p-4">
         <h3 className="font-medium">Senha do painel</h3>

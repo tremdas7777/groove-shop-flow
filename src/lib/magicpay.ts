@@ -191,7 +191,10 @@ export const createMagicPayPix = createServerFn({ method: "POST" })
       if (data.order) {
         void import("@/lib/admin-api")
           .then(({ commitStoreOrder }) =>
-            commitStoreOrder({ ...data.order!, pix, status: data.order?.status ?? "pending" }, true),
+            commitStoreOrder(
+              { ...data.order!, pix, status: data.order?.status ?? "pending", gateway: "magicpay" },
+              true,
+            ),
           )
           .catch(() => undefined);
       }

@@ -2,11 +2,13 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import {
   defaultSettings,
+  emptyPayment,
   emptyUtmfy,
   applySavedPixels,
   mergePixelLists,
   metaCapiTargets,
   tiktokCapiTargets,
+  normalizePayment,
   normalizePixels,
   publicPixels,
   maskPixelSettings,
@@ -15,6 +17,7 @@ import {
   type PresenceVisitor,
   type PublicTrackingSettings,
 } from "@/lib/admin";
+import { resolveWappiCredentials } from "@/lib/payment-gateway";
 import { UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 import {
   customerFirstName,
@@ -746,6 +749,13 @@ function mergePersisted(data: PersistedState) {
         ...data.settings,
         pixels: mergedPixels,
         utmfy: store.settings.utmfy,
+        payment: normalizePayment({
+          ...store.settings.payment,
+          ...data.settings.payment,
+          wappiSecretKey: hasSecret(data.settings.payment?.wappiSecretKey)
+            ? data.settings.payment.wappiSecretKey
+            : store.settings.payment?.wappiSecretKey || data.settings.payment?.wappiSecretKey || "",
+        }),
         settingsAt: diskAt,
       };
     } else {
@@ -756,6 +766,13 @@ function mergePersisted(data: PersistedState) {
           ...data.settings,
           pixels: mergedPixels,
           utmfy: store.settings.utmfy,
+          payment: normalizePayment({
+            ...store.settings.payment,
+            ...data.settings.payment,
+            wappiSecretKey: hasSecret(data.settings.payment?.wappiSecretKey)
+              ? data.settings.payment.wappiSecretKey
+              : store.settings.payment?.wappiSecretKey || "",
+          }),
           settingsAt: storeAt,
         };
       }
@@ -914,6 +931,7 @@ async function hydrate() {
         ...data.settings,
         pixels: normalizePixels(data.settings.pixels),
         utmfy: { ...emptyUtmfy, ...data.settings.utmfy },
+        payment: normalizePayment(data.settings.payment),
       };
     }
     mergePersisted(data);
@@ -949,6 +967,23 @@ function maskSettings(): AdminSettings {
       ...store.settings.utmfy,
       apiToken: maskSecret(store.settings.utmfy.apiToken),
     },
+    payment: {
+      ...normalizePayment(store.settings.payment),
+      wappiSecretKey: maskSecret(store.settings.payment?.wappiSecretKey ?? ""),
+    },
+  };
+}
+
+export async function getPaymentGatewayConfig() {
+  await hydrate();
+  const payment = normalizePayment(store.settings.payment);
+  return {
+    provider: payment.provider,
+    wappi: resolveWappiCredentials({
+      publicKey: payment.wappiPublicKey,
+      secretKey: payment.wappiSecretKey,
+      apiUrl: payment.wappiApiUrl,
+    }),
   };
 }
 
@@ -1442,6 +1477,7 @@ function mergeOrders(prev: OrderSummary | undefined, incoming: OrderSummary): Or
     sessionId: preferSession(prev.sessionId, incoming.sessionId),
     notes: incoming.notes || prev.notes,
     purchaseTracked: incoming.purchaseTracked || prev.purchaseTracked,
+    gateway: incoming.gateway || prev.gateway,
     pixelsSent: {
       addPaymentInfo: Boolean(incoming.pixelsSent?.addPaymentInfo || prev.pixelsSent?.addPaymentInfo),
       purchase: Boolean(incoming.pixelsSent?.purchase || prev.pixelsSent?.purchase),
@@ -2088,6 +2124,14 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
           apiToken: z.string(),
           testMode: z.boolean(),
         }),
+        payment: z
+          .object({
+            provider: z.enum(["magicpay", "wappi"]),
+            wappiPublicKey: z.string(),
+            wappiSecretKey: z.string(),
+            wappiApiUrl: z.string(),
+          })
+          .optional(),
       }),
     }),
   )
@@ -2098,6 +2142,11 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
       !data.settings.utmfy.apiToken || data.settings.utmfy.apiToken.includes("•")
         ? store.settings.utmfy.apiToken
         : data.settings.utmfy.apiToken;
+    const incomingPayment = normalizePayment(data.settings.payment ?? store.settings.payment);
+    const keepWappiSecret =
+      !incomingPayment.wappiSecretKey || incomingPayment.wappiSecretKey.includes("•")
+        ? store.settings.payment?.wappiSecretKey || ""
+        : incomingPayment.wappiSecretKey;
     store.settings = {
       ...store.settings,
       storeName: data.settings.storeName,
@@ -2108,6 +2157,12 @@ export const saveAdminSettings = createServerFn({ method: "POST" })
         apiToken: keepToken,
         pixelId: data.settings.utmfy.pixelId || UTMIFY_PIXEL_ID,
         enabled: data.settings.utmfy.enabled || hasSecret(keepToken),
+      },
+      payment: {
+        ...incomingPayment,
+        wappiSecretKey: keepWappiSecret,
+        wappiPublicKey:
+          incomingPayment.wappiPublicKey.trim() || store.settings.payment?.wappiPublicKey || "",
       },
       hasPin: Boolean(store.pinHash),
       settingsAt: Date.now(),

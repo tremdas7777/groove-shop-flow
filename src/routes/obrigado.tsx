@@ -4,7 +4,7 @@ import { Check } from "lucide-react";
 import { CheckoutShell } from "@/components/CheckoutShell";
 import { customerFirstName, loadOrder, persistOrder, type OrderSummary } from "@/lib/checkout";
 import { runningKits, type KitPiece, type RunningKit } from "@/lib/kits";
-import { createMagicPayPix } from "@/lib/magicpay";
+import { createStorePix } from "@/lib/payment-gateway";
 import { formatBRL } from "@/lib/products";
 import { getAttribution, getSessionId, track } from "@/lib/tracking";
 import { orderStatus } from "@/lib/admin";
@@ -115,7 +115,7 @@ function ThankYouPage() {
       parent_order_id: order.id,
     });
     try {
-      const result = await createMagicPayPix({
+      const result = await createStorePix({
         data: {
           orderId,
           amountCents: Math.round(kit.price * 100),
@@ -150,7 +150,10 @@ function ThankYouPage() {
         setPayError(result.error || "Não gerou o PIX do kit. Tente de novo.");
         return;
       }
-      await persistOrder({ ...upsellOrder, pix: result.pix, status: "pending" }, true);
+      await persistOrder(
+        { ...upsellOrder, pix: result.pix, gateway: result.gateway, status: "pending" },
+        true,
+      );
       void navigate({ to: "/pedido" });
     } catch (error) {
       setPayError(

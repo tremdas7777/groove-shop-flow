@@ -1,5 +1,6 @@
 import {
   defaultSettings,
+  normalizePayment,
   normalizePixels,
   ONLINE_MS,
   pixelsAreActive,
@@ -63,6 +64,7 @@ export function loadLocalSettings(): AdminSettings {
           Boolean(parsed.utmfy?.enabled) ||
           Boolean(parsed.utmfy?.apiToken && !parsed.utmfy.apiToken.includes("•")),
       },
+      payment: normalizePayment(parsed.payment),
       hasPin: localHasPin(),
     };
   } catch {

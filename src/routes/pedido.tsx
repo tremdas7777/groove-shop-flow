@@ -10,7 +10,7 @@ import {
   updateOrderPix,
   type OrderSummary,
 } from "@/lib/checkout";
-import { getMagicPayPix } from "@/lib/magicpay";
+import { getStorePix } from "@/lib/payment-gateway";
 import { formatBRL } from "@/lib/products";
 import { track } from "@/lib/tracking";
 
@@ -39,7 +39,12 @@ function OrderPage() {
 
     let cancelled = false;
     const poll = async () => {
-      const result = await getMagicPayPix({ data: { transactionId } });
+      const result = await getStorePix({
+        data: {
+          transactionId,
+          gateway: order.gateway,
+        },
+      });
       if (cancelled || !result.ok) return;
       const next = updateOrderPix(result.pix);
       if (next) {
@@ -91,7 +96,7 @@ function OrderPage() {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
-  }, [order?.pix?.transactionId, order?.pix?.status, navigate]);
+  }, [order?.pix?.transactionId, order?.pix?.status, order?.gateway, navigate]);
 
   useEffect(() => {
     if (!order) return;

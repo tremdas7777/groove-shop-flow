@@ -49,11 +49,21 @@ export interface UtmfySettings {
   testMode: boolean;
 }
 
+export type PaymentProvider = "magicpay" | "wappi";
+
+export interface PaymentGatewaySettings {
+  provider: PaymentProvider;
+  wappiPublicKey: string;
+  wappiSecretKey: string;
+  wappiApiUrl: string;
+}
+
 export interface AdminSettings {
   storeName: string;
   webhookUrl: string;
   pixels: PixelSettings;
   utmfy: UtmfySettings;
+  payment: PaymentGatewaySettings;
   hasPin: boolean;
   settingsAt?: number;
 }
@@ -410,11 +420,30 @@ export const emptyUtmfy: UtmfySettings = {
   testMode: false,
 };
 
+export const emptyPayment: PaymentGatewaySettings = {
+  provider: "magicpay",
+  wappiPublicKey: "",
+  wappiSecretKey: "",
+  wappiApiUrl: "https://api.wappibrasil.com.br",
+};
+
+export function normalizePayment(payment?: Partial<PaymentGatewaySettings> | null): PaymentGatewaySettings {
+  const merged = { ...emptyPayment, ...payment };
+  const provider = merged.provider === "wappi" ? "wappi" : "magicpay";
+  return {
+    provider,
+    wappiPublicKey: merged.wappiPublicKey ?? "",
+    wappiSecretKey: merged.wappiSecretKey ?? "",
+    wappiApiUrl: (merged.wappiApiUrl ?? "").trim() || emptyPayment.wappiApiUrl,
+  };
+}
+
 export const defaultSettings: AdminSettings = {
   storeName: "ASICS Brasil",
   webhookUrl: "",
   pixels: emptyPixels,
   utmfy: emptyUtmfy,
+  payment: emptyPayment,
   hasPin: false,
 };
 

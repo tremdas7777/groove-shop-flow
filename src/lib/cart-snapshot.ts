@@ -47,7 +47,7 @@ export function describeCart(lines: StoredCartLine[] = readStoredCart()): {
         photo: product.fotos[0],
       } satisfies CartSnapshotItem;
     })
-    .filter((item): item is CartSnapshotItem => Boolean(item));
+    .filter((item): item is NonNullable<typeof item> => Boolean(item)) as CartSnapshotItem[];
   return {
     items,
     value: items.reduce((acc, item) => acc + item.price * item.qty, 0),

@@ -255,6 +255,24 @@ export function listPixelItems(pixels: PixelSettings) {
   return normalizePixels(pixels).items;
 }
 
+/** Meta e TikTok sempre aparecem no painel, mesmo sem ID ainda. */
+export function withTrafficPixelSlots(pixels?: Partial<PixelSettings> | null): PixelSettings {
+  const n = normalizePixels(pixels);
+  const items = [...n.items];
+  for (const kind of ["meta", "tiktok"] as const) {
+    if (!items.some((item) => item.kind === kind)) {
+      items.push({
+        id: `slot-${kind}`,
+        kind,
+        enabled: true,
+        pixelId: "",
+        accessToken: "",
+      });
+    }
+  }
+  return syncPixelLegacy({ ...n, items });
+}
+
 export function pixelsAreActive(pixels: PixelSettings) {
   return listPixelItems(pixels).some(
     (item) => item.enabled && Boolean(item.pixelId || item.adsId || item.html?.trim()),

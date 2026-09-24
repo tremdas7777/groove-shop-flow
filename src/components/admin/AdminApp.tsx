@@ -53,6 +53,7 @@ import {
   normalizePixels,
   orderStatus,
   pixelKindLabel,
+  withTrafficPixelSlots,
   relativeTime,
   sourceLabel,
   statusLabel,
@@ -1072,7 +1073,7 @@ function PixelsPanel({
   onChange: (settings: AdminSettings) => void;
   onSave: () => void;
 }) {
-  const pixels = normalizePixels(settings.pixels);
+  const pixels = withTrafficPixelSlots(settings.pixels);
   const items = pixels.items;
   const [kind, setKind] = useState<PixelKind>("meta");
 
@@ -1097,15 +1098,10 @@ function PixelsPanel({
       <div>
         <h2 className="text-xl font-semibold">Pixels de tráfego</h2>
         <p className="text-sm text-white/50">
-          Adicione ou remova pixels. Meta e TikTok também enviam a venda paga pela API, não só pelo navegador.
+          Meta e TikTok ficam sempre aqui. Cole o Pixel ID e salve — sem isso a loja só carrega o pixel da UTMify.
+          A venda paga também vai pela API, não só pelo navegador.
         </p>
       </div>
-
-      {items.length === 0 && (
-        <p className="rounded-2xl border border-dashed border-white/15 px-4 py-8 text-sm text-white/45">
-          Nenhum pixel cadastrado. Adicione Meta, Google, TikTok ou outro abaixo.
-        </p>
-      )}
 
       {items.map((item) => (
         <div key={item.id} className="rounded-2xl border border-white/10 bg-[#10182a] p-4">

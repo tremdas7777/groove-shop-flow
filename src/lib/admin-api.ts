@@ -540,20 +540,30 @@ function envTikTokToken() {
   return (process.env.TIKTOK_ACCESS_TOKEN ?? "").trim();
 }
 
-function ensureTikTokFromEnv() {
-  const pixelId = envTikTokPixel();
-  const accessToken = envTikTokToken();
+function envMetaPixel() {
+  return (process.env.META_PIXEL_ID ?? process.env.FACEBOOK_PIXEL_ID ?? "").trim();
+}
+
+function envMetaToken() {
+  return (process.env.META_ACCESS_TOKEN ?? process.env.FACEBOOK_ACCESS_TOKEN ?? "").trim();
+}
+
+function ensurePixelFromEnv(
+  kind: "meta" | "tiktok",
+  pixelId: string,
+  accessToken: string,
+) {
   if (!pixelId && !accessToken) return;
   const pixels = normalizePixels(store.settings.pixels);
-  const current = pixels.items.find((item) => item.kind === "tiktok");
+  const current = pixels.items.find((item) => item.kind === kind);
   if (!current) {
     store.settings.pixels = normalizePixels({
       ...pixels,
       items: [
         ...pixels.items,
         {
-          id: "env-tiktok",
-          kind: "tiktok",
+          id: `env-${kind}`,
+          kind,
           enabled: Boolean(pixelId),
           pixelId,
           accessToken,
@@ -565,6 +575,11 @@ function ensureTikTokFromEnv() {
   if (pixelId && !current.pixelId.trim()) current.pixelId = pixelId;
   if (accessToken && !hasSecret(current.accessToken)) current.accessToken = accessToken;
   store.settings.pixels = normalizePixels({ ...pixels, items: pixels.items });
+}
+
+function ensureTrafficPixelsFromEnv() {
+  ensurePixelFromEnv("meta", envMetaPixel(), envMetaToken());
+  ensurePixelFromEnv("tiktok", envTikTokPixel(), envTikTokToken());
 }
 
 function mergeUtmfy(disk?: AdminSettings["utmfy"]) {
@@ -867,10 +882,10 @@ async function persist() {
       const next = keepRicherTraffic(serializeState(), disk);
       const nextItems = normalizePixels(next.settings?.pixels).items;
       const diskItems = normalizePixels(disk?.settings?.pixels).items;
-      const nextAt = next.settings?.settingsAt ?? 0;
-      const diskAt = disk?.settings?.settingsAt ?? 0;
-      if (nextItems.length === 0 && diskItems.length > 0 && nextAt <= diskAt) {
-        const pixels = normalizePixels(disk?.settings?.pixels);
+      const nextFilled = nextItems.some((item) => item.pixelId.trim() || hasSecret(item.accessToken));
+      const diskFilled = diskItems.some((item) => item.pixelId.trim() || hasSecret(item.accessToken));
+      if (!nextFilled && diskFilled) {
+        const pixels = mergePixelLists(disk?.settings?.pixels, next.settings?.pixels);
         if (next.settings) next.settings.pixels = pixels;
         store.settings.pixels = pixels;
       }
@@ -904,7 +919,7 @@ async function hydrate() {
   store.settings.hasPin = true;
   await loadUtmfyToken();
   mergeUtmfy(store.settings.utmfy);
-  ensureTikTokFromEnv();
+  ensureTrafficPixelsFromEnv();
 }
 
 function publicSettings(): PublicTrackingSettings {

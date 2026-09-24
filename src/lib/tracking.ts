@@ -289,7 +289,7 @@ export function firePixels(event: AnalyticsEvent) {
   const contentName = String(event.props?.content_name ?? "");
   const numItems = Number(event.props?.num_items ?? event.props?.cart_qty ?? 0) || undefined;
   const cartItems = Array.isArray(event.props?.cart_items) ? event.props.cart_items : [];
-  const contents = cartItems.length
+  const contents: { content_id: string; content_type: string; content_name?: string; quantity?: number; price?: number }[] = cartItems.length
     ? cartItems.map((item: { id?: number; title?: string; qty?: number; price?: number }) => ({
         content_id: String(item.id ?? ""),
         content_type: "product",

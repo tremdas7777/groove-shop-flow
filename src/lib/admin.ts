@@ -69,7 +69,7 @@ export interface AdminSettings {
 }
 
 export interface PublicTrackingSettings {
-  pixels: Omit<PixelSettings, "customHeadHtml" | "metaAccessToken"> & { customHeadHtml: string };
+  pixels: PixelSettings;
   utmfy: { enabled: boolean; pixelId: string };
 }
 

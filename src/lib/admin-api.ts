@@ -585,7 +585,7 @@ function ensureTrafficPixelsFromEnv() {
   ensurePixelFromEnv("tiktok", envTikTokPixel(), envTikTokToken());
 }
 
-function mergeUtmfy(disk?: AdminSettings["utmfy"]) {
+function mergeUtmfy(disk?: Partial<AdminSettings["utmfy"]>) {
   const current = store.settings.utmfy ?? emptyUtmfy;
   const incoming = { ...emptyUtmfy, ...disk };
   const apiToken = [current.apiToken, incoming.apiToken, envUtmfyToken()].find((value) => hasSecret(value)) ?? "";
@@ -598,7 +598,7 @@ function mergeUtmfy(disk?: AdminSettings["utmfy"]) {
 }
 
 async function rememberUtmfyToken(token?: string) {
-  if (!hasSecret(token)) return;
+  if (!token || !hasSecret(token)) return;
   store.settings.utmfy.apiToken = token.trim();
   store.settings.utmfy.enabled = true;
   await putShard(UTMIFY_TOKEN_URL, { apiToken: token.trim() });
@@ -615,7 +615,8 @@ async function loadUtmfyToken() {
   mergeUtmfy({ apiToken: pinned?.apiToken ?? "" });
 }
 
-function mergeVisitor(prev: PresenceVisitor | undefined, incoming: PresenceVisitor): PresenceVisitor {
+function mergeVisitor(prevIn: PresenceVisitor | undefined, incoming: PresenceVisitor): PresenceVisitor {
+  const prev = prevIn ?? ({} as PresenceVisitor);
   if (!prev) return incoming;
   const newer = incoming.lastTs >= prev.lastTs ? incoming : prev;
   const older = newer === incoming ? prev : incoming;
@@ -1472,7 +1473,7 @@ function mergeOrders(prev: OrderSummary | undefined, incoming: OrderSummary): Or
     ...incoming,
     data: { ...prev.data, ...incoming.data },
     items: incoming.items?.length ? incoming.items : prev.items,
-    pix: prev.pix || incoming.pix ? { ...prev.pix, ...incoming.pix } : incoming.pix,
+    pix: prev.pix || incoming.pix ? ({ ...prev.pix, ...incoming.pix } as PresenceVisitor["pix"]) : incoming.pix,
     attribution: mergeAttribution(prev.attribution, incoming.attribution),
     sessionId: preferSession(prev.sessionId, incoming.sessionId),
     notes: incoming.notes || prev.notes,

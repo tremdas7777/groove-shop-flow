@@ -100,6 +100,10 @@ export interface OrderSummary {
   parentOrderId?: string;
   upsell?: boolean;
   purchaseTracked?: boolean;
+  pixelsSent?: {
+    addPaymentInfo?: boolean;
+    purchase?: boolean;
+  };
   utmfySent?: {
     waiting_payment?: boolean;
     paid?: boolean;

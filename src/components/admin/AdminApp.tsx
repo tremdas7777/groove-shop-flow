@@ -166,17 +166,23 @@ export function AdminApp() {
         setSnap(mergeLocal(next));
         const mergedSettings = keepTypedSecrets(loadLocalSettings(), next.settings);
         setSettings((prev) => {
-          const prevCount = listPixelItems(prev.pixels).length;
-          const nextCount = listPixelItems(mergedSettings.pixels).length;
+          const merged = keepTypedSecrets(prev, mergedSettings);
+          const prevFilled = listPixelItems(prev.pixels).some(
+            (item) => item.pixelId.trim() || item.adsId?.trim() || item.html?.trim(),
+          );
+          const nextFilled = listPixelItems(merged.pixels).some(
+            (item) => item.pixelId.trim() || item.adsId?.trim() || item.html?.trim(),
+          );
+          // servidor vazio nunca apaga o que você já salvou neste navegador
+          if (prevFilled && !nextFilled) return prev;
           if (!settingsLoaded) {
             settingsLoaded = true;
-            const merged = keepTypedSecrets(prev, mergedSettings);
             saveLocalSettings(merged);
             return merged;
           }
-          if (prevCount === 0 && nextCount > 0) {
-            saveLocalSettings({ ...prev, pixels: mergedSettings.pixels });
-            return { ...prev, pixels: mergedSettings.pixels };
+          if (!prevFilled && nextFilled) {
+            saveLocalSettings({ ...prev, pixels: merged.pixels });
+            return { ...prev, pixels: merged.pixels };
           }
           return prev;
         });
@@ -1098,8 +1104,8 @@ function PixelsPanel({
       <div>
         <h2 className="text-xl font-semibold">Pixels de tráfego</h2>
         <p className="text-sm text-white/50">
-          Meta e TikTok ficam sempre aqui. Cole o Pixel ID e salve — sem isso a loja só carrega o pixel da UTMify.
-          A venda paga também vai pela API, não só pelo navegador.
+          Meta e TikTok ficam sempre aqui. Cole o Pixel ID + token e salve.
+          Funil: checkout = InitiateCheckout · PIX gerado = AddPaymentInfo · PIX pago = Purchase.
         </p>
       </div>
 

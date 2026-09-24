@@ -272,35 +272,66 @@ declare global {
   }
 }
 
+function pixelEventId(event: AnalyticsEvent, kind: "purchase" | "add_payment" | "other") {
+  const orderId = String(event.props?.order_id ?? "").trim();
+  const explicit = String(event.props?.event_id ?? "").trim();
+  if (explicit) return explicit;
+  if (kind === "purchase" && orderId) return orderId;
+  if (kind === "add_payment" && orderId) return `${orderId}-AddPaymentInfo`;
+  return orderId || event.id;
+}
+
 export function firePixels(event: AnalyticsEvent) {
   if (typeof window === "undefined") return;
   const value = Number(event.props?.value ?? event.props?.total ?? 0);
   const currency = "BRL";
   const contentIds = (event.props?.content_ids as string[] | undefined) ?? [];
   const contentName = String(event.props?.content_name ?? "");
+  const numItems = Number(event.props?.num_items ?? event.props?.cart_qty ?? 0) || undefined;
+  const cartItems = Array.isArray(event.props?.cart_items) ? event.props.cart_items : [];
+  const contents = cartItems.length
+    ? cartItems.map((item: { id?: number; title?: string; qty?: number; price?: number }) => ({
+        content_id: String(item.id ?? ""),
+        content_type: "product",
+        content_name: item.title,
+        quantity: item.qty ?? 1,
+        price: item.price,
+      }))
+    : contentIds.map((id) => ({
+        content_id: id,
+        content_type: "product",
+        content_name: contentName || undefined,
+      }));
 
+  // Purchase só no PIX pago. PIX gerado = AddPaymentInfo.
   const metaMap: Record<string, string> = {
     page_view: "PageView",
     view_item: "ViewContent",
     add_to_cart: "AddToCart",
     view_cart: "AddToCart",
     begin_checkout: "InitiateCheckout",
-    generate_pix: "Purchase",
+    generate_pix: "AddPaymentInfo",
     purchase: "Purchase",
     search: "Search",
   };
   const meta = metaMap[event.name];
   if (meta && window.fbq) {
-    const eventID = String(event.props?.event_id ?? event.props?.order_id ?? event.id);
+    const eventID = pixelEventId(
+      event,
+      event.name === "purchase" ? "purchase" : event.name === "generate_pix" ? "add_payment" : "other",
+    );
     window.fbq(
       "track",
       meta,
       {
         value: value || undefined,
         currency,
-        content_ids: contentIds,
+        content_ids: contentIds.length ? contentIds : undefined,
         content_name: contentName || undefined,
         content_type: "product",
+        contents: contents.length ? contents : undefined,
+        num_items: numItems || (contents.length ? contents.reduce((acc, item) => acc + (Number(item.quantity) || 1), 0) : undefined),
+        order_id: event.props?.order_id || undefined,
       },
       { eventID },
     );
@@ -321,26 +352,12 @@ export function firePixels(event: AnalyticsEvent) {
     add_to_cart: "AddToCart",
     view_cart: "AddToCart",
     begin_checkout: "InitiateCheckout",
-    generate_pix: "CompletePayment",
+    generate_pix: "PlaceAnOrder",
     purchase: "CompletePayment",
     search: "Search",
   };
   const tt = ttMap[event.name];
   if (tt) {
-    const cartItems = Array.isArray(event.props?.cart_items) ? event.props.cart_items : [];
-    const contents = cartItems.length
-      ? cartItems.map((item: { id?: number; title?: string; qty?: number; price?: number }) => ({
-          content_id: String(item.id ?? ""),
-          content_type: "product",
-          content_name: item.title,
-          quantity: item.qty ?? 1,
-          price: item.price,
-        }))
-      : contentIds.map((id) => ({
-          content_id: id,
-          content_type: "product",
-          content_name: contentName || undefined,
-        }));
     trackTikTok(tt, {
       value: value || undefined,
       currency,
@@ -348,7 +365,10 @@ export function firePixels(event: AnalyticsEvent) {
       content_type: "product",
       content_id: contentIds[0],
       content_name: contentName || undefined,
-      event_id: String(event.props?.event_id ?? event.props?.order_id ?? event.id),
+      event_id: pixelEventId(
+        event,
+        event.name === "purchase" ? "purchase" : event.name === "generate_pix" ? "add_payment" : "other",
+      ),
     });
   }
 
@@ -356,7 +376,7 @@ export function firePixels(event: AnalyticsEvent) {
     view_item: "view_item",
     add_to_cart: "add_to_cart",
     begin_checkout: "begin_checkout",
-    generate_pix: "purchase",
+    generate_pix: "add_payment_info",
     purchase: "purchase",
     search: "search",
   };
@@ -365,18 +385,23 @@ export function firePixels(event: AnalyticsEvent) {
     window.gtag("event", g, {
       value: value || undefined,
       currency,
-      transaction_id: event.props?.order_id,
-      items: contentIds.map((id) => ({ item_id: id, item_name: contentName })),
+      transaction_id: event.name === "purchase" ? event.props?.order_id : undefined,
+      items: contentIds.map((id, index) => ({
+        item_id: id,
+        item_name: contentName || contents[index]?.content_name,
+        quantity: contents[index]?.quantity ?? 1,
+        price: contents[index]?.price,
+      })),
     });
   }
 
-  if ((event.name === "purchase" || event.name === "generate_pix") && window.kwaiq?.track) {
+  if (event.name === "purchase" && window.kwaiq?.track) {
     window.kwaiq.track("purchase", { value, currency });
   }
-  if ((event.name === "purchase" || event.name === "generate_pix") && window.snaptr) {
+  if (event.name === "purchase" && window.snaptr) {
     window.snaptr("track", "PURCHASE", { price: value, currency });
   }
-  if ((event.name === "purchase" || event.name === "generate_pix") && window.pintrk) {
+  if (event.name === "purchase" && window.pintrk) {
     window.pintrk("track", "checkout", { value, currency });
   }
 }

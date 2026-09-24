@@ -100,9 +100,17 @@ function ThankYouPage() {
     };
     track("generate_pix", {
       order_id: orderId,
+      event_id: `${orderId}-AddPaymentInfo`,
       value: kit.price,
       content_ids: [String(kit.id)],
       content_name: kit.title,
+      num_items: 1,
+      cart_items: [{ id: kit.id, title: kit.title, qty: 1, price: kit.price }],
+      email: order.data.email,
+      name: order.data.name,
+      phone: order.data.phone,
+      city: order.data.city,
+      state: order.data.state,
       upsell: true,
       parent_order_id: order.id,
     });

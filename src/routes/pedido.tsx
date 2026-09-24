@@ -50,10 +50,27 @@ function OrderPage() {
             value: next.total,
             content_ids: next.items.map((item) => String(item.id)),
             content_name: next.items.map((item) => item.title).join(", "),
+            num_items: next.items.reduce((acc, item) => acc + item.qty, 0),
+            cart_items: next.items.map((item) => ({
+              id: item.id,
+              title: item.title,
+              size: item.size,
+              qty: item.qty,
+              price: item.price,
+              photo: item.photo,
+            })),
             email: next.data.email,
+            name: next.data.name,
             phone: next.data.phone,
+            city: next.data.city,
+            state: next.data.state,
           });
-          void persistOrder({ ...next, purchaseTracked: true, status: "paid" });
+          void persistOrder({
+            ...next,
+            purchaseTracked: true,
+            status: "paid",
+            pixelsSent: { ...next.pixelsSent, purchase: true },
+          });
           void navigate({ to: "/obrigado" });
           return;
         }

@@ -283,27 +283,45 @@ function filledSecret(value?: string) {
   return Boolean(value?.trim() && !value.includes("•"));
 }
 
+function pixelFilled(item?: PixelItem | null) {
+  return Boolean(
+    item &&
+      (item.pixelId?.trim() ||
+        item.adsId?.trim() ||
+        item.html?.trim() ||
+        filledSecret(item.accessToken)),
+  );
+}
+
+function preferFilledPixel(incoming: PixelItem, stored?: PixelItem): PixelItem {
+  if (!stored) return incoming;
+  return {
+    ...stored,
+    ...incoming,
+    enabled: incoming.enabled || stored.enabled,
+    pixelId: incoming.pixelId?.trim() ? incoming.pixelId : stored.pixelId,
+    adsId: incoming.adsId?.trim() ? incoming.adsId : stored.adsId,
+    html: incoming.html?.trim() ? incoming.html : stored.html,
+    accessToken: filledSecret(incoming.accessToken)
+      ? incoming.accessToken
+      : stored.accessToken || incoming.accessToken,
+  };
+}
+
 export function mergePixelLists(left?: PixelSettings | null, right?: PixelSettings | null): PixelSettings {
   const a = normalizePixels(left);
   const b = normalizePixels(right);
   const byId = new Map<string, PixelItem>();
   for (const item of [...a.items, ...b.items]) {
-    const prev = byId.get(item.id);
-    if (!prev) {
-      byId.set(item.id, item);
-      continue;
-    }
-    byId.set(item.id, {
-      ...prev,
-      ...item,
-      enabled: item.enabled || prev.enabled,
-      pixelId: item.pixelId || prev.pixelId,
-      adsId: item.adsId || prev.adsId,
-      html: item.html || prev.html,
-      accessToken: filledSecret(item.accessToken) ? item.accessToken : prev.accessToken || item.accessToken,
-    });
+    byId.set(item.id, preferFilledPixel(item, byId.get(item.id)));
   }
-  return syncPixelLegacy({ ...a, ...b, items: [...byId.values()] });
+  let items = [...byId.values()];
+  // slot vazio não fica junto de um pixel preenchido do mesmo tipo
+  items = items.filter((item) => {
+    if (!item.id.startsWith("slot-") || pixelFilled(item)) return true;
+    return !items.some((other) => other.id !== item.id && other.kind === item.kind && pixelFilled(other));
+  });
+  return syncPixelLegacy({ ...a, ...b, items });
 }
 
 export function maskPixelSettings(pixels: PixelSettings, mask: (value: string) => string): PixelSettings {
@@ -321,21 +339,36 @@ export function maskPixelSettings(pixels: PixelSettings, mask: (value: string) =
 export function mergePixelSecrets(incoming: PixelSettings, stored: PixelSettings): PixelSettings {
   const next = normalizePixels(incoming);
   const prev = normalizePixels(stored);
-  if (next.items.length === 0 && prev.items.length > 0) return prev;
+  if (!next.items.some((item) => pixelFilled(item)) && prev.items.some((item) => pixelFilled(item))) {
+    return prev;
+  }
   return mergePixelLists(prev, next);
 }
 
-/** Aplica o que o admin salvou: a lista enviada manda, tokens mascarados ficam os antigos. */
+/** Aplica o save do admin sem apagar Pixel ID / token já gravados. */
 export function applySavedPixels(incoming: PixelSettings, stored: PixelSettings): PixelSettings {
   const next = normalizePixels(incoming);
-  const prevById = new Map(normalizePixels(stored).items.map((item) => [item.id, item]));
+  const prev = normalizePixels(stored);
+  if (!next.items.some((item) => pixelFilled(item)) && prev.items.some((item) => pixelFilled(item))) {
+    return prev;
+  }
+  const prevById = new Map(prev.items.map((item) => [item.id, item]));
+  const prevFilledByKind = new Map<PixelKind, PixelItem>();
+  for (const item of prev.items) {
+    if (!pixelFilled(item)) continue;
+    if (!prevFilledByKind.has(item.kind)) prevFilledByKind.set(item.kind, item);
+  }
+  const used = new Set<string>();
   const items = next.items.map((item) => {
-    const old = prevById.get(item.id);
-    return {
-      ...item,
-      accessToken: filledSecret(item.accessToken) ? item.accessToken : old?.accessToken || item.accessToken,
-    };
+    const old = prevById.get(item.id) ?? (!item.pixelId.trim() ? prevFilledByKind.get(item.kind) : undefined);
+    if (old) used.add(old.id);
+    return preferFilledPixel(item, old);
   });
+  for (const item of prev.items) {
+    if (!pixelFilled(item) || used.has(item.id)) continue;
+    if (items.some((row) => row.kind === item.kind && pixelFilled(row))) continue;
+    items.push(item);
+  }
   return syncPixelLegacy({ ...next, items });
 }
 

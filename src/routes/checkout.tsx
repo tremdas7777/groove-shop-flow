@@ -114,6 +114,16 @@ function CheckoutPage() {
     track("begin_checkout", {
       value: subtotal,
       content_ids: detailed.map((d) => String(d.item.id)),
+      content_name: detailed.map((d) => d.product!.titulo).join(", "),
+      num_items: detailed.reduce((acc, d) => acc + d.item.qty, 0),
+      cart_items: detailed.map((d) => ({
+        id: d.item.id,
+        title: d.product!.titulo,
+        size: d.item.size,
+        qty: d.item.qty,
+        price: parsePrice(d.product!.preco),
+        photo: d.product!.fotos[0],
+      })),
     });
   }, [ready, items, subtotal, detailed]);
 
@@ -260,8 +270,19 @@ function CheckoutPage() {
         await persistOrder({ ...pendingOrder, pix: result.pix });
         track("generate_pix", {
           order_id: orderId,
+          event_id: `${orderId}-AddPaymentInfo`,
           value: total,
           content_ids: orderItems.map((item) => String(item.id)),
+          content_name: orderItems.map((item) => item.title).join(", "),
+          num_items: orderItems.reduce((acc, item) => acc + item.qty, 0),
+          cart_items: orderItems.map((item) => ({
+            id: item.id,
+            title: item.title,
+            size: item.size,
+            qty: item.qty,
+            price: item.price,
+            photo: item.photo,
+          })),
           email: checkoutData.email,
           name: checkoutData.name,
           phone: checkoutData.phone,

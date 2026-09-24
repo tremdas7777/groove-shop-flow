@@ -739,16 +739,26 @@ function mergePersisted(data: PersistedState) {
   if (data.settings) {
     const storeAt = store.settings.settingsAt ?? 0;
     const diskAt = data.settings.settingsAt ?? 0;
+    const mergedPixels = mergePixelLists(store.settings.pixels, data.settings.pixels);
     if (diskAt > storeAt) {
       store.settings = {
         ...defaultSettings,
         ...data.settings,
-        pixels: normalizePixels(data.settings.pixels),
+        pixels: mergedPixels,
         utmfy: store.settings.utmfy,
         settingsAt: diskAt,
       };
-    } else if (diskAt === storeAt) {
-      store.settings.pixels = mergePixelLists(store.settings.pixels, data.settings.pixels);
+    } else {
+      store.settings.pixels = mergedPixels;
+      if (diskAt > 0 && diskAt === storeAt) {
+        store.settings = {
+          ...store.settings,
+          ...data.settings,
+          pixels: mergedPixels,
+          utmfy: store.settings.utmfy,
+          settingsAt: storeAt,
+        };
+      }
     }
     mergeUtmfy(data.settings.utmfy);
   }
@@ -880,15 +890,9 @@ async function persist() {
       if (disk) mergePersisted(disk);
       await mergeLiveBusIntoStore();
       const next = keepRicherTraffic(serializeState(), disk);
-      const nextItems = normalizePixels(next.settings?.pixels).items;
-      const diskItems = normalizePixels(disk?.settings?.pixels).items;
-      const nextFilled = nextItems.some((item) => item.pixelId.trim() || hasSecret(item.accessToken));
-      const diskFilled = diskItems.some((item) => item.pixelId.trim() || hasSecret(item.accessToken));
-      if (!nextFilled && diskFilled) {
-        const pixels = mergePixelLists(disk?.settings?.pixels, next.settings?.pixels);
-        if (next.settings) next.settings.pixels = pixels;
-        store.settings.pixels = pixels;
-      }
+      const mergedPixels = mergePixelLists(disk?.settings?.pixels, next.settings?.pixels);
+      if (next.settings) next.settings.pixels = mergedPixels;
+      store.settings.pixels = mergedPixels;
       mergePersisted(next);
       await writePersisted(serializeState());
     } catch {
@@ -1235,13 +1239,21 @@ async function sendMetaCapi(order: OrderSummary, eventName: "Purchase" | "AddPay
   const targets = metaCapiTargets(store.settings.pixels);
   if (targets.length === 0) return;
   const phone = order.data.phone.replace(/\D/g, "");
+  const eventId = eventName === "Purchase" ? order.id : `${order.id}-${eventName}`;
+  const city = order.data.city?.trim();
+  const state = order.data.state?.trim();
+  const zip = order.data.cep?.replace(/\D/g, "");
   const payload = {
     data: [
       {
         event_name: eventName,
         event_time: Math.floor(Date.now() / 1000),
-        event_id: order.id,
+        event_id: eventId,
         action_source: "website",
+        event_source_url:
+          eventName === "Purchase"
+            ? "https://outletasics.lovable.app/obrigado"
+            : "https://outletasics.lovable.app/pedido",
         user_data: {
           em: [await hashUser(order.data.email)],
           ph: phone ? [await hashUser(phone)] : undefined,
@@ -1251,14 +1263,25 @@ async function sendMetaCapi(order: OrderSummary, eventName: "Purchase" | "AddPay
           ln: customerLastName(order.data)
             ? [await hashUser(customerLastName(order.data))]
             : undefined,
+          ct: city ? [await hashUser(city)] : undefined,
+          st: state ? [await hashUser(state)] : undefined,
+          zp: zip ? [await hashUser(zip)] : undefined,
           external_id: order.sessionId ? [await hashUser(order.sessionId)] : undefined,
           country: [await hashUser("br")],
+          ...(order.attribution?.fbclid
+            ? { fbc: `fb.1.${Math.floor(Date.now() / 1000)}.${order.attribution.fbclid}` }
+            : {}),
         },
         custom_data: {
           currency: "BRL",
           value: order.total,
           content_ids: order.items.map((item) => String(item.id)),
           content_type: "product",
+          contents: order.items.map((item) => ({
+            id: String(item.id),
+            quantity: item.qty,
+            item_price: item.price,
+          })),
           order_id: order.id,
           num_items: order.items.reduce((acc, item) => acc + item.qty, 0),
         },
@@ -1323,7 +1346,7 @@ async function sendTikTokEvents(order: OrderSummary, eventName: "Purchase" | "Ad
       {
         event,
         event_time: Math.floor(Date.now() / 1000),
-        event_id: eventName === "Purchase" ? order.id : `${order.id}-${event}`,
+        event_id: eventName === "Purchase" ? order.id : `${order.id}-AddPaymentInfo`,
         user: {
           email: email ? await hashUser(email) : undefined,
           phone: phone ? await hashUser(phone) : undefined,
@@ -1337,6 +1360,7 @@ async function sendTikTokEvents(order: OrderSummary, eventName: "Purchase" | "Ad
           currency: "BRL",
           value: order.total,
           content_type: "product",
+          order_id: order.id,
           contents: order.items.map((item) => ({
             content_id: String(item.id),
             content_type: "product",
@@ -1418,6 +1442,10 @@ function mergeOrders(prev: OrderSummary | undefined, incoming: OrderSummary): Or
     sessionId: preferSession(prev.sessionId, incoming.sessionId),
     notes: incoming.notes || prev.notes,
     purchaseTracked: incoming.purchaseTracked || prev.purchaseTracked,
+    pixelsSent: {
+      addPaymentInfo: Boolean(incoming.pixelsSent?.addPaymentInfo || prev.pixelsSent?.addPaymentInfo),
+      purchase: Boolean(incoming.pixelsSent?.purchase || prev.pixelsSent?.purchase),
+    },
     utmfySent: mergeUtmfySent(prev.utmfySent, incoming.utmfySent),
     createdAt: earlierIso(prev.createdAt, incoming.createdAt) ?? incoming.createdAt,
     status: paid ? "paid" : incoming.status || prev.status,
@@ -1651,14 +1679,22 @@ export async function commitStoreOrder(order: OrderSummary, notify = false) {
   const next = store.orders.find((item) => item.id === order.id) ?? order;
   if (notify) {
     try {
-      const nextStatus = next.status === "paid" || next.pix?.status === "paid" ? "paid" : next.status ?? "pending";
-      const prevStatus = prev?.status === "paid" || prev?.pix?.status === "paid" ? "paid" : prev?.status;
+      const nextPaid = next.status === "paid" || next.pix?.status === "paid";
+      const prevPaid = prev?.status === "paid" || prev?.pix?.status === "paid";
       await notifyUtmfy(next);
-      if (!prev) {
+      if (!prev?.pixelsSent?.addPaymentInfo && !next.pixelsSent?.addPaymentInfo) {
+        await sendMetaCapi(next, "AddPaymentInfo");
+        await sendTikTokEvents(next, "AddPaymentInfo");
+        next.pixelsSent = { ...next.pixelsSent, addPaymentInfo: true };
+      }
+      if (nextPaid && !prevPaid && !next.pixelsSent?.purchase) {
         await sendMetaCapi(next, "Purchase");
         await sendTikTokEvents(next, "Purchase");
+        next.pixelsSent = { ...next.pixelsSent, purchase: true };
+      }
+      if (!prev) {
         await sendWebhook("order.created", next);
-      } else if (prevStatus !== nextStatus) {
+      } else if (prevPaid !== nextPaid || prev?.status !== next.status) {
         await sendWebhook("order.updated", next);
       }
     } catch {
@@ -2109,9 +2145,14 @@ export const updateAdminOrder = createServerFn({ method: "POST" })
     }
     if (data.notes !== undefined) order.notes = data.notes;
     await notifyUtmfy(order);
-    if (order.status === "paid") {
+    if (order.status === "paid" && !order.pixelsSent?.purchase) {
       await sendMetaCapi(order, "Purchase");
       await sendTikTokEvents(order, "Purchase");
+      order.pixelsSent = { ...order.pixelsSent, purchase: true };
+    } else if (order.status === "pending" && !order.pixelsSent?.addPaymentInfo) {
+      await sendMetaCapi(order, "AddPaymentInfo");
+      await sendTikTokEvents(order, "AddPaymentInfo");
+      order.pixelsSent = { ...order.pixelsSent, addPaymentInfo: true };
     }
     await sendWebhook("order.updated", order);
     await persist();

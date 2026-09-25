@@ -219,18 +219,19 @@ export async function persistOrder(order: OrderSummary, notify = true) {
       cache: "no-store",
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json().catch(() => ({ ok: true }));
   };
 
-  void (async () => {
+  const sync = (async () => {
     for (let attempt = 0; attempt < 8; attempt++) {
       try {
         await postHttp();
-        return;
+        return true;
       } catch {
         try {
           const { upsertStoreOrder } = await import("@/lib/admin-api");
           await upsertStoreOrder({ data: { order: next, notify } });
-          return;
+          return true;
         } catch {
           // tenta de novo
         }
@@ -247,7 +248,14 @@ export async function persistOrder(order: OrderSummary, notify = true) {
     } catch {
       // último recurso falhou
     }
+    return false;
   })();
+
+  // Espera o POST chegar no servidor (UTMify via waitUntil) sem atrasar o QR demais.
+  await Promise.race([
+    sync,
+    new Promise((resolve) => window.setTimeout(resolve, 2500)),
+  ]);
 
   return next;
 }

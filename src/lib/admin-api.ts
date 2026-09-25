@@ -1905,15 +1905,17 @@ async function refreshPendingPix() {
           const statusChanged =
             nextStatus !== (order.status ?? order.pix?.status) || pix.status !== order.pix?.status;
           if (paid || refused || statusChanged || !order.utmfySent?.waiting_payment) {
-            await commitStoreOrder(
+            const prev = order;
+            const saved = await commitStoreOrder(
               {
                 ...order,
                 gateway: "wappi",
                 pix: { ...order.pix, ...pix },
                 status: nextStatus,
               },
-              true,
+              false,
             );
+            await deliverOrderSideEffects(prev, saved);
           }
           continue;
         }
@@ -1928,7 +1930,9 @@ async function refreshPendingPix() {
           order.status !== "paid" &&
           order.pix?.status !== "paid";
         if (becamePaid || utmfyStatusOf(merged) !== "waiting_payment" || !merged.utmfySent?.waiting_payment) {
-          await commitStoreOrder(merged, true);
+          const prev = order;
+          const saved = await commitStoreOrder(merged, false);
+          await deliverOrderSideEffects(prev, saved);
         }
       } catch {
         // próxima transação
@@ -2010,35 +2014,56 @@ export async function commitStoreOrder(order: OrderSummary, notify = false) {
   void writeRemoteOrders(next).catch(() => undefined);
   void persist().catch(() => undefined);
   if (notify) {
-    // Notificações em background — não bloqueia QR / resposta do checkout
-    void (async () => {
-      try {
-        const nextPaid = next.status === "paid" || next.pix?.status === "paid";
-        const prevPaid = prev?.status === "paid" || prev?.pix?.status === "paid";
-        await notifyUtmfy(next);
-        if (!prev?.pixelsSent?.addPaymentInfo && !next.pixelsSent?.addPaymentInfo) {
-          await sendMetaCapi(next, "AddPaymentInfo");
-          await sendTikTokEvents(next, "AddPaymentInfo");
-          next.pixelsSent = { ...next.pixelsSent, addPaymentInfo: true };
-        }
-        if (nextPaid && !prevPaid && !next.pixelsSent?.purchase) {
-          await sendMetaCapi(next, "Purchase");
-          await sendTikTokEvents(next, "Purchase");
-          next.pixelsSent = { ...next.pixelsSent, purchase: true };
-        }
-        if (!prev) {
-          await sendWebhook("order.created", next);
-        } else if (prevPaid !== nextPaid || prev?.status !== next.status) {
-          await sendWebhook("order.updated", next);
-        }
-        await persistTrafficShards({ order: next });
-        void writeRemoteOrders(next).catch(() => undefined);
-        await persist();
-      } catch {
-        // PIX já existe; a gravação ainda tenta de novo
-      }
-    })();
+    // Quem chama com waitUntil deve usar deliverOrderSideEffects — aqui é só fallback.
+    void deliverOrderSideEffects(prev, next).catch(() => undefined);
   }
+  return next;
+}
+
+/** UTMify pendente + pago, pixels e webhook — pensado para waitUntil. */
+export async function deliverOrderSideEffects(
+  prev: OrderSummary | undefined,
+  next: OrderSummary,
+) {
+  applyUtmfyTokenNow();
+  if (!hasSecret(store.settings.utmfy.apiToken)) await loadUtmfyToken();
+  const nextPaid = next.status === "paid" || next.pix?.status === "paid";
+  const prevPaid = prev?.status === "paid" || prev?.pix?.status === "paid";
+
+  // Sempre tenta pendente; se já pago, envia waiting_payment e em seguida paid.
+  await notifyUtmfy(next);
+  let sent = store.utmfyClaims.get(next.id) ?? next.utmfySent;
+  if (!sent?.waiting_payment) {
+    await notifyUtmfy(next);
+    sent = store.utmfyClaims.get(next.id) ?? sent;
+  }
+  if (nextPaid && !sent?.paid) {
+    await notifyUtmfy(next);
+    sent = store.utmfyClaims.get(next.id) ?? sent;
+  }
+
+  try {
+    if (!prev?.pixelsSent?.addPaymentInfo && !next.pixelsSent?.addPaymentInfo) {
+      await sendMetaCapi(next, "AddPaymentInfo");
+      await sendTikTokEvents(next, "AddPaymentInfo");
+      next.pixelsSent = { ...next.pixelsSent, addPaymentInfo: true };
+    }
+    if (nextPaid && !prevPaid && !next.pixelsSent?.purchase) {
+      await sendMetaCapi(next, "Purchase");
+      await sendTikTokEvents(next, "Purchase");
+      next.pixelsSent = { ...next.pixelsSent, purchase: true };
+    }
+    if (!prev) {
+      await sendWebhook("order.created", next);
+    } else if (prevPaid !== nextPaid || prev?.status !== next.status) {
+      await sendWebhook("order.updated", next);
+    }
+  } catch {
+    // UTMify já tentou; pixels/webhook são secundários
+  }
+  await persistTrafficShards({ order: next });
+  void writeRemoteOrders(next).catch(() => undefined);
+  await persist();
   return next;
 }
 
@@ -2063,15 +2088,18 @@ export async function commitStoreOrderByPix(
           : order.status === "paid"
             ? "paid"
             : "pending";
-  return commitStoreOrder(
+  const prev = order;
+  const next = await commitStoreOrder(
     {
       ...order,
       gateway,
       pix: { ...order.pix, ...pix },
       status: nextStatus,
     },
-    true,
+    false,
   );
+  await deliverOrderSideEffects(prev, next ?? order);
+  return next;
 }
 
 function snapshot(): AdminSnapshot {
@@ -2387,11 +2415,14 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
 export const upsertStoreOrder = createServerFn({ method: "POST" })
   .validator(z.object({ order: orderSchema, notify: z.boolean().optional() }))
   .handler(async ({ data }) => {
-    await commitStoreOrder(data.order, data.notify !== false);
+    await hydrate();
+    const prev = store.orders.find((item) => item.id === data.order.id);
+    const next = await commitStoreOrder(data.order, false);
+    if (data.notify !== false) await deliverOrderSideEffects(prev, next);
     return { ok: true };
   });
 
-/** HTTP estável p/ anúncios — não depende do RPC do TanStack. */
+/** HTTP estável p/ anúncios — QR no client; UTMify pendente/pago via waitUntil. */
 export async function handleUpsertOrder(
   request: Request,
   ctx?: { waitUntil?: (job: Promise<unknown>) => void },
@@ -2418,14 +2449,23 @@ export async function handleUpsertOrder(
       return Response.json({ ok: false, error: "order" }, { status: 400, headers: cors });
     }
     const notify = body.notify !== false;
-    const job = commitStoreOrder(order, notify);
-    ctx?.waitUntil?.(job.catch(() => undefined));
-    // Confirma gravação rápida; notify/UTMify já rodam em background no commit.
-    await Promise.race([
-      job,
-      new Promise((resolve) => setTimeout(resolve, 4000)),
-    ]);
-    return Response.json({ ok: true, id: order.id }, { headers: cors });
+    await hydrate();
+    const prev = store.orders.find((item) => item.id === order.id);
+    const next = await commitStoreOrder(order, false);
+    if (notify) {
+      const job = deliverOrderSideEffects(prev, next).catch(() => undefined);
+      if (ctx?.waitUntil) ctx.waitUntil(job);
+      else await job;
+    }
+    return Response.json(
+      {
+        ok: true,
+        id: next.id,
+        utmfy: store.utmfyClaims.get(next.id) ?? next.utmfySent ?? null,
+        utmfyLast: store.utmfyLast ?? null,
+      },
+      { headers: cors },
+    );
   } catch (error) {
     return Response.json(
       { ok: false, error: error instanceof Error ? error.message : "fail" },

@@ -258,7 +258,9 @@ async function fetchWithTimeout(url: string, init: RequestInit | undefined, ms: 
 }
 
 async function readRemoteLiveBus(): Promise<LiveBus | null> {
+  // Une todas as fontes — URL custom vazia não pode “ganhar” e esconder o setget.
   const urls = [liveRemoteUrl(), `${LIVE_REMOTE_GET}?t=${Date.now()}`].filter(Boolean);
+  const parts: LiveBus[] = [];
   for (const url of urls) {
     try {
       const res = await fetchWithTimeout(
@@ -267,20 +269,29 @@ async function readRemoteLiveBus(): Promise<LiveBus | null> {
           headers: { Accept: "application/json", "Cache-Control": "no-store" },
           cache: "no-store",
         },
-        1200,
+        8000,
       );
       if (!res.ok) continue;
       const parsed = parseRemoteLiveBus(await res.json());
-      if (parsed) return parsed;
+      if (parsed) parts.push(parsed);
     } catch {
       // próximo store
     }
   }
-  return null;
+  if (!parts.length) return null;
+  return parts.reduce((acc, part) => unionLiveBus(acc, part));
 }
 
 async function writeRemoteLiveBus(bus: LiveBus) {
-  const body = JSON.stringify(compactLiveBus(bus));
+  // Sempre une com o remoto antes de gravar — evita isolate vazio apagar quem está na loja.
+  let merged = bus;
+  try {
+    const remote = await readRemoteLiveBus();
+    if (remote) merged = unionLiveBus(remote, bus);
+  } catch {
+    // grava o que tiver
+  }
+  const body = JSON.stringify(compactLiveBus(merged));
   const custom = liveRemoteUrl();
   const targets = custom
     ? [{ url: custom, method: "PUT" as const }]
@@ -299,7 +310,7 @@ async function writeRemoteLiveBus(bus: LiveBus) {
         }
       }),
     ),
-    new Promise((resolve) => setTimeout(resolve, 2000)),
+    new Promise((resolve) => setTimeout(resolve, 8000)),
   ]);
 }
 
@@ -2312,25 +2323,44 @@ export async function pushLivePing(
     state: typeof raw.state === "string" ? raw.state : textProp(event?.props, "state"),
     shipping: typeof raw.shipping === "string" ? raw.shipping : textProp(event?.props, "shipping"),
   });
+  // Memória primeiro — o painel e o mesmo isolate veem na hora.
   store.presence.set(sessionId, visitor);
-  if (event?.id) {
-    const incoming = { ...event, sessionId, path: event.path || path } as AnalyticsEvent;
+  const incoming =
+    event?.id
+      ? ({ ...event, sessionId, path: event.path || path } as AnalyticsEvent)
+      : undefined;
+  if (incoming) {
     store.events = [...store.events.filter((item) => item.id !== incoming.id), incoming].slice(-MAX_EVENTS);
-    if (incoming.name === "generate_pix" || incoming.name === "purchase") {
-      const stub = orderFromEvent(incoming, visitor);
-      if (stub) {
-        upsertOrderLocal(stub);
-        await persistTrafficShards({ order: stub });
-        void writeRemoteOrders(stub).catch(() => undefined);
-      }
-    }
-    await persistTrafficShards({ event: incoming, visitor });
-    await rememberLive({ visitor, event: incoming });
-  } else {
-    await persistTrafficShards({ visitor });
-    await rememberLive({ visitor });
   }
-  persistSoon(ctx);
+  // Persistência remota em background — POST /api/live não pode travar o celular.
+  const job = (async () => {
+    try {
+      if (incoming) {
+        if (incoming.name === "generate_pix" || incoming.name === "purchase") {
+          const stub = orderFromEvent(incoming, visitor);
+          if (stub) {
+            upsertOrderLocal(stub);
+            await persistTrafficShards({ order: stub });
+            void writeRemoteOrders(stub).catch(() => undefined);
+          }
+        }
+        await persistTrafficShards({ event: incoming, visitor });
+        await rememberLive({ visitor, event: incoming });
+      } else {
+        await persistTrafficShards({ visitor });
+        await rememberLive({ visitor });
+      }
+      await persist();
+    } catch {
+      // ping é best-effort
+    }
+  })();
+  try {
+    ctx?.waitUntil?.(job);
+  } catch {
+    // sem waitUntil
+  }
+  void job;
   return { ok: true };
 }
 
@@ -2422,9 +2452,16 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
     if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
     const visitor = visitorFromPing(data);
     store.presence.set(data.sessionId, visitor);
-    await persistTrafficShards({ visitor });
-    await rememberLive({ visitor });
-    persistSoon();
+    // Não bloquear o heartbeat do celular no setget/disco.
+    void (async () => {
+      try {
+        await persistTrafficShards({ visitor });
+        await rememberLive({ visitor });
+        await persist();
+      } catch {
+        // best-effort
+      }
+    })();
     return { ok: true };
   });
 

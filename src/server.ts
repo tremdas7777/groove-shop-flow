@@ -68,6 +68,10 @@ export default {
         const { handleAdminSnapshot } = await import("./lib/admin-api");
         return await handleAdminSnapshot(request);
       }
+      if (url.pathname === "/api/order" && (request.method === "POST" || request.method === "OPTIONS")) {
+        const { handleUpsertOrder } = await import("./lib/admin-api");
+        return await handleUpsertOrder(request, waitUntilFrom(ctx));
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

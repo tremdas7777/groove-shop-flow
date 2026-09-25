@@ -30,7 +30,11 @@ function OrderPage() {
 
   useEffect(() => {
     const saved = loadOrder();
-    if (saved) setOrder(saved);
+    if (saved) {
+      setOrder(saved);
+      // Garante painel/UTMify mesmo se o RPC do create falhou no checkout
+      void persistOrder(saved, true);
+    }
   }, []);
 
   useEffect(() => {

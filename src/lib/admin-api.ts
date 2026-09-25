@@ -2391,6 +2391,49 @@ export const upsertStoreOrder = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+/** HTTP estável p/ anúncios — não depende do RPC do TanStack. */
+export async function handleUpsertOrder(
+  request: Request,
+  ctx?: { waitUntil?: (job: Promise<unknown>) => void },
+) {
+  const cors = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "POST,OPTIONS",
+    "access-control-allow-headers": "content-type",
+  };
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: cors });
+  }
+  if (request.method !== "POST") {
+    return Response.json({ ok: false }, { status: 405, headers: cors });
+  }
+  try {
+    const text = await request.text();
+    if (!text || text.length > 200_000) {
+      return Response.json({ ok: false, error: "payload" }, { status: 400, headers: cors });
+    }
+    const body = JSON.parse(text) as { order?: OrderSummary; notify?: boolean };
+    const order = body.order;
+    if (!order?.id || !/^PD/i.test(String(order.id))) {
+      return Response.json({ ok: false, error: "order" }, { status: 400, headers: cors });
+    }
+    const notify = body.notify !== false;
+    const job = commitStoreOrder(order, notify);
+    ctx?.waitUntil?.(job.catch(() => undefined));
+    // Confirma gravação rápida; notify/UTMify já rodam em background no commit.
+    await Promise.race([
+      job,
+      new Promise((resolve) => setTimeout(resolve, 4000)),
+    ]);
+    return Response.json({ ok: true, id: order.id }, { headers: cors });
+  } catch (error) {
+    return Response.json(
+      { ok: false, error: error instanceof Error ? error.message : "fail" },
+      { status: 500, headers: cors },
+    );
+  }
+}
+
 export const adminStatus = createServerFn({ method: "GET" }).handler(async () => {
   await hydrate();
   await ensurePinHash();

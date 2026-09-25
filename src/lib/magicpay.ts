@@ -256,21 +256,48 @@ export const createStorePix = createServerFn({ method: "POST" })
   .validator(createPixInput)
   .handler(async ({ data }) => {
     const { createWappiPixTransaction, envWappiCredentials } = await import("@/lib/wappi");
-    const config = await resolveGateway();
+    // Hot path do anúncio: usa fallback/env direto — sem hydrate/admin.
     const env = envWappiCredentials();
-    const wappi =
-      config.wappi.publicKey && config.wappi.secretKey && !config.wappi.secretKey.includes("•")
-        ? config.wappi
-        : env;
-    // Sempre Wappi quando há chaves — não deixa cair na MagicPay/SimPay.
-    const gateway =
-      wappi.publicKey && wappi.secretKey ? ("wappi" as const) : config.provider;
-
-    if (gateway === "wappi") {
+    let lastError = "Não foi possível gerar o PIX na Wappi.";
+    if (env.publicKey && env.secretKey) {
       try {
+        const result = await createWappiPixTransaction(data, env);
+        if (!result.ok) {
+          lastError = result.error || lastError;
+        } else {
+          if (data.order) {
+            void import("@/lib/admin-api")
+              .then(({ commitStoreOrder }) =>
+                commitStoreOrder(
+                  {
+                    ...data.order!,
+                    gateway: "wappi",
+                    pix: result.pix,
+                    status: data.order?.status ?? "pending",
+                  },
+                  true,
+                ),
+              )
+              .catch(() => undefined);
+          }
+          return { ok: true as const, pix: withGateway(result.pix, "wappi"), gateway: "wappi" as const };
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : lastError;
+      }
+    }
+
+    try {
+      const config = await resolveGateway();
+      const wappi =
+        config.wappi.publicKey && config.wappi.secretKey && !config.wappi.secretKey.includes("•")
+          ? config.wappi
+          : env;
+      if (wappi.publicKey && wappi.secretKey) {
         const result = await createWappiPixTransaction(data, wappi);
-        if (!result.ok) return result;
-        // QR na hora — gravação no painel/UTMify em background.
+        if (!result.ok) {
+          return { ok: false as const, error: result.error || lastError };
+        }
         if (data.order) {
           void import("@/lib/admin-api")
             .then(({ commitStoreOrder }) =>
@@ -287,21 +314,12 @@ export const createStorePix = createServerFn({ method: "POST" })
             .catch(() => undefined);
         }
         return { ok: true as const, pix: withGateway(result.pix, "wappi"), gateway: "wappi" as const };
-      } catch (error) {
-        return {
-          ok: false as const,
-          error: error instanceof Error ? error.message : "Não foi possível gerar o PIX na Wappi.",
-        };
       }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : lastError;
     }
 
-    const result = await createMagicPayPixTransaction(data);
-    if (!result.ok) return result;
-    return {
-      ok: true as const,
-      pix: withGateway(result.pix, "magicpay"),
-      gateway: "magicpay" as const,
-    };
+    return { ok: false as const, error: lastError };
   });
 export const getStorePix = createServerFn({ method: "GET" })
   .validator(
@@ -311,31 +329,32 @@ export const getStorePix = createServerFn({ method: "GET" })
     }),
   )
   .handler(async ({ data }) => {
-    const config = await resolveGateway();
-    const gateway = data.gateway || config.provider;
-
-    if (gateway === "wappi") {
+    if (data.gateway !== "magicpay") {
       try {
-        const { getWappiPixTransaction, resolveWappiCredentials } = await import("@/lib/wappi");
-        const creds = resolveWappiCredentials(config.wappi);
-        const result = await getWappiPixTransaction(data.transactionId, creds);
-        if (!result.ok) return result;
-        const pix = withGateway(result.pix, "wappi");
-        if (pix.status === "paid" || pix.status === "refused" || pix.status === "refunded") {
-          void import("@/lib/admin-api")
-            .then(({ commitStoreOrderByPix }) => commitStoreOrderByPix(pix, "wappi"))
-            .catch(() => undefined);
-        } else {
-          void import("@/lib/admin-api")
-            .then(({ tickPendingPix }) => tickPendingPix())
-            .catch(() => undefined);
+        const { getWappiPixTransaction, envWappiCredentials } = await import("@/lib/wappi");
+        const creds = envWappiCredentials();
+        if (creds.publicKey && creds.secretKey) {
+          const result = await getWappiPixTransaction(data.transactionId, creds);
+          if (!result.ok) return result;
+          const pix = withGateway(result.pix, "wappi");
+          if (pix.status === "paid" || pix.status === "refused" || pix.status === "refunded") {
+            void import("@/lib/admin-api")
+              .then(({ commitStoreOrderByPix }) => commitStoreOrderByPix(pix, "wappi"))
+              .catch(() => undefined);
+          } else {
+            void import("@/lib/admin-api")
+              .then(({ tickPendingPix }) => tickPendingPix())
+              .catch(() => undefined);
+          }
+          return { ok: true as const, pix, gateway: "wappi" as const };
         }
-        return { ok: true as const, pix, gateway: "wappi" as const };
       } catch (error) {
-        return {
-          ok: false as const,
-          error: error instanceof Error ? error.message : "Não foi possível consultar o PIX na Wappi.",
-        };
+        if (data.gateway === "wappi") {
+          return {
+            ok: false as const,
+            error: error instanceof Error ? error.message : "Não foi possível consultar o PIX na Wappi.",
+          };
+        }
       }
     }
 

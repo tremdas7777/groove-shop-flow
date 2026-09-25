@@ -208,17 +208,47 @@ export async function persistOrder(order: OrderSummary, notify = true) {
     status: order.status ?? (order.pix?.status === "paid" ? "paid" : "pending"),
   };
   saveOrder(next);
+
+  const payload = JSON.stringify({ order: next, notify });
+  const postHttp = async () => {
+    const res = await fetch("/api/order", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: payload,
+      keepalive: true,
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  };
+
   void (async () => {
-    for (let attempt = 0; attempt < 6; attempt++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
       try {
-        const { upsertStoreOrder } = await import("@/lib/admin-api");
-        await upsertStoreOrder({ data: { order: next, notify } });
+        await postHttp();
         return;
       } catch {
-        if (attempt < 5) await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
+        try {
+          const { upsertStoreOrder } = await import("@/lib/admin-api");
+          await upsertStoreOrder({ data: { order: next, notify } });
+          return;
+        } catch {
+          // tenta de novo
+        }
+        if (attempt < 7) {
+          await new Promise((resolve) => window.setTimeout(resolve, 400 * (attempt + 1)));
+        }
       }
     }
+    try {
+      navigator.sendBeacon?.(
+        "/api/order",
+        new Blob([payload], { type: "application/json" }),
+      );
+    } catch {
+      // último recurso falhou
+    }
   })();
+
   return next;
 }
 

@@ -660,12 +660,27 @@ async function readRemotePayment(): Promise<AdminSettings["payment"] | null> {
       cache: "no-store",
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as unknown;
+    const data = unwrapSetgetValue(await res.json());
     if (!data || typeof data !== "object") return null;
     return normalizePayment(data as AdminSettings["payment"]);
   } catch {
     return null;
   }
+}
+
+/** setget.net devolve { id, value: ... } — precisa desembrulhar. */
+function unwrapSetgetValue(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object") return payload;
+  const root = payload as Record<string, unknown>;
+  const raw = "value" in root ? root.value : payload;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return raw;
 }
 
 async function rememberPayment(payment?: AdminSettings["payment"]) {
@@ -700,7 +715,10 @@ async function readRemoteOrders(): Promise<OrderSummary[]> {
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
     ]);
     if (!res || !res.ok) return [];
-    const data = (await res.json()) as { orders?: OrderSummary[] } | OrderSummary[] | null;
+    const data = unwrapSetgetValue(await res.json()) as
+      | { orders?: OrderSummary[] }
+      | OrderSummary[]
+      | null;
     const list = Array.isArray(data) ? data : Array.isArray(data?.orders) ? data.orders : [];
     return list.filter((order) => order && typeof order === "object" && /^PD/i.test(String(order.id ?? "")));
   } catch {

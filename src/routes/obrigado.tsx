@@ -115,37 +115,45 @@ function ThankYouPage() {
       parent_order_id: order.id,
     });
     try {
-      const result = await createStorePix({
-        data: {
-          orderId,
-          amountCents: Math.round(kit.price * 100),
-          shippingCents: 0,
-          customer: {
-            name: order.data.name,
-            email: order.data.email,
-            phone: order.data.phone,
-            cpf: order.data.cpf,
-          },
-          address: {
-            street: order.data.street,
-            streetNumber: order.data.number,
-            neighborhood: order.data.neighborhood,
-            city: order.data.city,
-            state: order.data.state,
-            zipCode: order.data.cep,
-            complement: order.data.complement,
-          },
-          items: [
-            {
-              title: kit.title,
-              unitPrice: Math.round(kit.price * 100),
-              quantity: 1,
-              externalRef: String(kit.id),
+      const result = await Promise.race([
+        createStorePix({
+          data: {
+            orderId,
+            amountCents: Math.round(kit.price * 100),
+            shippingCents: 0,
+            customer: {
+              name: order.data.name,
+              email: order.data.email,
+              phone: order.data.phone,
+              cpf: order.data.cpf,
             },
-          ],
-          order: upsellOrder,
-        },
-      });
+            address: {
+              street: order.data.street,
+              streetNumber: order.data.number,
+              neighborhood: order.data.neighborhood,
+              city: order.data.city,
+              state: order.data.state,
+              zipCode: order.data.cep,
+              complement: order.data.complement,
+            },
+            items: [
+              {
+                title: kit.title,
+                unitPrice: Math.round(kit.price * 100),
+                quantity: 1,
+                externalRef: String(kit.id),
+              },
+            ],
+            order: upsellOrder,
+          },
+        }),
+        new Promise<never>((_, reject) =>
+          window.setTimeout(
+            () => reject(new Error("Demorou demais para gerar o PIX. Tente de novo.")),
+            20000,
+          ),
+        ),
+      ]);
       if (!result.ok) {
         setPayError(result.error || "Não gerou o PIX do kit. Tente de novo.");
         return;

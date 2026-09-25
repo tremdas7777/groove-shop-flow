@@ -270,21 +270,21 @@ export const createStorePix = createServerFn({ method: "POST" })
       try {
         const result = await createWappiPixTransaction(data, wappi);
         if (!result.ok) return result;
+        // Não espera admin/UTMify — o QR precisa voltar na hora.
         if (data.order) {
-          try {
-            const { commitStoreOrder } = await import("@/lib/admin-api");
-            await commitStoreOrder(
-              {
-                ...data.order,
-                gateway: "wappi",
-                pix: result.pix,
-                status: data.order.status ?? "pending",
-              },
-              true,
-            );
-          } catch {
-            // PIX já existe; o /pedido ainda tenta gravar
-          }
+          void import("@/lib/admin-api")
+            .then(({ commitStoreOrder }) =>
+              commitStoreOrder(
+                {
+                  ...data.order!,
+                  gateway: "wappi",
+                  pix: result.pix,
+                  status: data.order?.status ?? "pending",
+                },
+                true,
+              ),
+            )
+            .catch(() => undefined);
         }
         return { ok: true as const, pix: withGateway(result.pix, "wappi"), gateway: "wappi" as const };
       } catch (error) {
@@ -322,16 +322,14 @@ export const getStorePix = createServerFn({ method: "GET" })
         if (!result.ok) return result;
         const pix = withGateway(result.pix, "wappi");
         if (pix.status === "paid" || pix.status === "refused" || pix.status === "refunded") {
-          try {
-            const { commitStoreOrderByPix } = await import("@/lib/admin-api");
-            await commitStoreOrderByPix(pix, "wappi");
-          } catch {
-            // o /pedido ainda tenta gravar o pagamento
-          }
+          void import("@/lib/admin-api")
+            .then(({ commitStoreOrderByPix }) => commitStoreOrderByPix(pix, "wappi"))
+            .catch(() => undefined);
+        } else {
+          void import("@/lib/admin-api")
+            .then(({ tickPendingPix }) => tickPendingPix())
+            .catch(() => undefined);
         }
-        void import("@/lib/admin-api")
-          .then(({ tickPendingPix }) => tickPendingPix())
-          .catch(() => undefined);
         return { ok: true as const, pix, gateway: "wappi" as const };
       } catch (error) {
         return {

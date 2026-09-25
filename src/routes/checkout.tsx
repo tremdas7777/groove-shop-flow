@@ -239,30 +239,38 @@ function CheckoutPage() {
         sessionId: getSessionId(),
       };
       try {
-        const result = await createStorePix({
-          data: {
-            orderId,
-            amountCents,
-            shippingCents,
-            customer: {
-              name: checkoutData.name,
-              email: checkoutData.email,
-              phone: checkoutData.phone,
-              cpf: checkoutData.cpf,
+        const result = await Promise.race([
+          createStorePix({
+            data: {
+              orderId,
+              amountCents,
+              shippingCents,
+              customer: {
+                name: checkoutData.name,
+                email: checkoutData.email,
+                phone: checkoutData.phone,
+                cpf: checkoutData.cpf,
+              },
+              address: {
+                street: checkoutData.street,
+                streetNumber: checkoutData.number,
+                neighborhood: checkoutData.neighborhood,
+                city: checkoutData.city,
+                state: checkoutData.state,
+                zipCode: checkoutData.cep,
+                complement: checkoutData.complement,
+              },
+              items: pixItems,
+              order: pendingOrder,
             },
-            address: {
-              street: checkoutData.street,
-              streetNumber: checkoutData.number,
-              neighborhood: checkoutData.neighborhood,
-              city: checkoutData.city,
-              state: checkoutData.state,
-              zipCode: checkoutData.cep,
-              complement: checkoutData.complement,
-            },
-            items: pixItems,
-            order: pendingOrder,
-          },
-        });
+          }),
+          new Promise<never>((_, reject) =>
+            window.setTimeout(
+              () => reject(new Error("Demorou demais para gerar o PIX. Tente de novo.")),
+              20000,
+            ),
+          ),
+        ]);
         if (!result.ok) {
           setPayError(result.error);
           return;

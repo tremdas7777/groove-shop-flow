@@ -1301,14 +1301,22 @@ async function sendUtmfy(order: OrderSummary, status: "waiting_payment" | "paid"
   const attempts = status === "waiting_payment" && utmfyStatusOf(order) === "paid" ? 2 : 4;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const res = await fetch("https://api.utmify.com.br/api-credentials/orders", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-token": token,
-        },
-        body: JSON.stringify(payload),
-      });
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      let res: Response;
+      try {
+        res = await fetch("https://api.utmify.com.br/api-credentials/orders", {
+          method: "POST",
+          signal: ctrl.signal,
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-token": token,
+          },
+          body: JSON.stringify(payload),
+        });
+      } finally {
+        clearTimeout(timer);
+      }
       const body = await res.text();
       const duplicate = /already|duplicate|exists|já exist|ja exist/i.test(body);
       const ok = res.ok || (res.status >= 400 && res.status < 500 && duplicate);

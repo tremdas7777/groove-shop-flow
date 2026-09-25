@@ -785,7 +785,7 @@ async function readRemoteUtmfyToken(): Promise<string> {
       cache: "no-store",
     });
     if (!res.ok) return "";
-    const data = (await res.json()) as { apiToken?: string } | null;
+    const data = unwrapSetgetValue(await res.json()) as { apiToken?: string } | null;
     return typeof data?.apiToken === "string" ? data.apiToken.trim() : "";
   } catch {
     return "";

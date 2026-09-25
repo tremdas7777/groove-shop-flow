@@ -72,6 +72,10 @@ export default {
         const { handleUpsertOrder } = await import("./lib/admin-api");
         return await handleUpsertOrder(request, waitUntilFrom(ctx));
       }
+      if (url.pathname === "/api/orders" && (request.method === "GET" || request.method === "OPTIONS")) {
+        const { handleListOrders } = await import("./lib/admin-api");
+        return await handleListOrders(request);
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

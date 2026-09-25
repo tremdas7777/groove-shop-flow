@@ -161,7 +161,42 @@ export function AdminApp() {
           });
           if (res.ok) next = (await res.json()) as AdminSnapshot;
         }
-        if (!next) throw new Error("snapshot offline");
+        // Sempre mescla pedidos remotos (anúncio) — mesmo se a sessão RPC falhar.
+        const remoteOrders = await fetch(`/api/orders?t=${Date.now()}`, { cache: "no-store" })
+          .then(async (res) => {
+            if (!res.ok) return [] as OrderSummary[];
+            const data = (await res.json()) as { orders?: OrderSummary[] };
+            return Array.isArray(data.orders) ? data.orders : [];
+          })
+          .catch(() => [] as OrderSummary[]);
+        if (!next) {
+          next = mergeLocal({
+            settings: loadLocalSettings(),
+            events: [],
+            orders: remoteOrders,
+            visitors: [],
+          });
+          setServerHint(
+            remoteOrders.length
+              ? `Pedidos sincronizados do servidor (${remoteOrders.length}).`
+              : "Este painel só está lendo este navegador. O servidor da loja não autenticou a sessão.",
+          );
+        } else if (remoteOrders.length) {
+          for (const order of remoteOrders) {
+            if (!next.orders.some((item) => item.id === order.id)) next.orders.push(order);
+            else {
+              const index = next.orders.findIndex((item) => item.id === order.id);
+              if (index >= 0) next.orders[index] = { ...next.orders[index], ...order };
+            }
+          }
+          setServerHint("");
+        } else {
+          setServerHint(
+            next.orders.some((order) => /^PD/i.test(order.id))
+              ? ""
+              : "Servidor conectado. Pedidos novos aparecem assim que o PIX for gerado.",
+          );
+        }
         if (cancelled) return;
         const live = await fetch(`/api/live?t=${Date.now()}`, { cache: "no-store" })
           .then((res) => (res.ok ? res.json() : null))
@@ -173,11 +208,6 @@ export function AdminApp() {
           if (index === -1) next.visitors.push(visitor);
           else next.visitors[index] = keepVisitorLead(next.visitors[index], visitor);
         }
-        setServerHint(
-          next.orders.some((order) => /^PD/i.test(order.id))
-            ? ""
-            : "Servidor conectado. Pedidos novos aparecem assim que o PIX for gerado.",
-        );
         setSnap(mergeLocal(next));
         const mergedSettings = keepTypedSecrets(loadLocalSettings(), next.settings);
         setSettings((prev) => {
@@ -203,8 +233,27 @@ export function AdminApp() {
         });
       } catch {
         if (!cancelled) {
-          setServerHint("Este painel só está lendo este navegador. O servidor da loja não autenticou a sessão.");
-          setSnap((prev) => prev ?? local);
+          const remoteOrders = await fetch(`/api/orders?t=${Date.now()}`, { cache: "no-store" })
+            .then(async (res) => {
+              if (!res.ok) return [] as OrderSummary[];
+              const data = (await res.json()) as { orders?: OrderSummary[] };
+              return Array.isArray(data.orders) ? data.orders : [];
+            })
+            .catch(() => [] as OrderSummary[]);
+          if (remoteOrders.length) {
+            setServerHint(`Pedidos sincronizados do servidor (${remoteOrders.length}).`);
+            setSnap(
+              mergeLocal({
+                settings: loadLocalSettings(),
+                events: [],
+                orders: remoteOrders,
+                visitors: [],
+              }),
+            );
+          } else {
+            setServerHint("Este painel só está lendo este navegador. O servidor da loja não autenticou a sessão.");
+            setSnap((prev) => prev ?? local);
+          }
         }
       }
     };

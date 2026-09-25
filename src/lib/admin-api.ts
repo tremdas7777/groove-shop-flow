@@ -739,11 +739,8 @@ async function writeRemoteOrders(extra?: OrderSummary) {
   ]);
 }
 
-let remoteOrdersLoaded = false;
-
 async function loadRemoteOrdersIntoStore() {
-  if (remoteOrdersLoaded) return;
-  remoteOrdersLoaded = true;
+  // Sempre relê — isolates novos e pedidos de anúncio entram a cada pull do admin.
   const remote = await readRemoteOrders();
   if (!remote.length) return;
   for (const order of remote) {
@@ -2526,6 +2523,32 @@ export async function handleAdminSnapshot(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sessão inválida.";
     return Response.json({ error: message }, { status: 401 });
+  }
+}
+
+/** Lista pedidos PD (remoto + memória) — painel vê anúncios mesmo se o RPC falhar. */
+export async function handleListOrders(request: Request) {
+  const cors = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,OPTIONS",
+    "access-control-allow-headers": "content-type",
+  };
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: cors });
+  }
+  try {
+    await hydrate();
+    await loadRemoteOrdersIntoStore();
+    const orders = store.orders
+      .filter((order) => /^PD/i.test(order.id))
+      .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
+      .slice(0, 200);
+    return Response.json({ ok: true, orders }, { headers: cors });
+  } catch (error) {
+    return Response.json(
+      { ok: false, error: error instanceof Error ? error.message : "fail", orders: [] },
+      { status: 500, headers: cors },
+    );
   }
 }
 

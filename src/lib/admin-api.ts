@@ -42,6 +42,12 @@ const ORDER_PREFIX = "https://asics-admin.internal/order/";
 const SESSION_PREFIX = "https://asics-admin.internal/session/";
 const UTMIFY_PREFIX = "https://asics-admin.internal/utmfy/";
 const UTMIFY_TOKEN_URL = "https://asics-admin.internal/utmfy-token";
+/** Backup remoto — sobrevive redeploy Lovable (Cache API some). */
+const UTMIFY_REMOTE_KEY = "asicsUtm9k3m7q2x8c1w5n0h4b";
+const UTMIFY_REMOTE_SET = `https://setget.net/set/${UTMIFY_REMOTE_KEY}`;
+const UTMIFY_REMOTE_GET = `https://setget.net/get/${UTMIFY_REMOTE_KEY}`;
+/** Fallback se env/admin limparem (mesmo token do .env local). */
+const UTMIFY_FALLBACK_B64 = "bGt6QmZVQ3FjM0x6RThnSVJoU2VJVm5EMjZZUUcyQzlyQUUy";
 const PAYMENT_URL = "https://asics-admin.internal/payment";
 const PAYMENT_REMOTE_KEY = "asicsPay9k3m7q2x8c1w5n0h4b";
 const PAYMENT_REMOTE_SET = `https://setget.net/set/${PAYMENT_REMOTE_KEY}`;
@@ -537,8 +543,22 @@ function hasSecret(value?: string) {
   return Boolean(value?.trim() && !value.includes("•"));
 }
 
+function fallbackUtmfyToken() {
+  try {
+    if (typeof atob === "function") return atob(UTMIFY_FALLBACK_B64).trim();
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
 function envUtmfyToken() {
-  return (process.env.UTMIFY_API_TOKEN ?? process.env.UTMIFY_TOKEN ?? "").trim();
+  return (
+    process.env.UTMIFY_API_TOKEN ||
+    process.env.UTMIFY_TOKEN ||
+    fallbackUtmfyToken() ||
+    ""
+  ).trim();
 }
 
 function envTikTokPixel() {
@@ -677,11 +697,45 @@ function mergeUtmfy(disk?: Partial<AdminSettings["utmfy"]>) {
   };
 }
 
+async function writeRemoteUtmfyToken(apiToken: string) {
+  const body = JSON.stringify({ apiToken });
+  await Promise.race([
+    (async () => {
+      try {
+        await fetch(UTMIFY_REMOTE_SET, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body,
+        });
+      } catch {
+        // store remoto opcional
+      }
+    })(),
+    new Promise((resolve) => setTimeout(resolve, 2000)),
+  ]);
+}
+
+async function readRemoteUtmfyToken(): Promise<string> {
+  try {
+    const res = await fetch(`${UTMIFY_REMOTE_GET}?t=${Date.now()}`, {
+      headers: { Accept: "application/json", "Cache-Control": "no-store" },
+      cache: "no-store",
+    });
+    if (!res.ok) return "";
+    const data = (await res.json()) as { apiToken?: string } | null;
+    return typeof data?.apiToken === "string" ? data.apiToken.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 async function rememberUtmfyToken(token?: string) {
   if (!token || !hasSecret(token)) return;
-  store.settings.utmfy.apiToken = token.trim();
+  const apiToken = token.trim();
+  store.settings.utmfy.apiToken = apiToken;
   store.settings.utmfy.enabled = true;
-  await putShard(UTMIFY_TOKEN_URL, { apiToken: token.trim() });
+  await putShard(UTMIFY_TOKEN_URL, { apiToken });
+  await writeRemoteUtmfyToken(apiToken);
 }
 
 function applyUtmfyTokenNow() {
@@ -689,10 +743,28 @@ function applyUtmfyTokenNow() {
 }
 
 async function loadUtmfyToken() {
+  const had = hasSecret(store.settings.utmfy.apiToken);
   applyUtmfyTokenNow();
-  if (hasSecret(envUtmfyToken()) || hasSecret(store.settings.utmfy.apiToken)) return;
+  if (hasSecret(store.settings.utmfy.apiToken)) {
+    if (!had) void flushUtmfyOrders().catch(() => undefined);
+    return;
+  }
   const pinned = await getShard<{ apiToken?: string }>(UTMIFY_TOKEN_URL);
-  mergeUtmfy({ apiToken: pinned?.apiToken ?? "" });
+  if (pinned?.apiToken) mergeUtmfy({ apiToken: pinned.apiToken });
+  if (hasSecret(store.settings.utmfy.apiToken)) {
+    await rememberUtmfyToken(store.settings.utmfy.apiToken);
+    void flushUtmfyOrders().catch(() => undefined);
+    return;
+  }
+  const remote = await readRemoteUtmfyToken();
+  if (remote) mergeUtmfy({ apiToken: remote });
+  if (!hasSecret(store.settings.utmfy.apiToken)) {
+    mergeUtmfy({ apiToken: fallbackUtmfyToken() });
+  }
+  if (hasSecret(store.settings.utmfy.apiToken)) {
+    await rememberUtmfyToken(store.settings.utmfy.apiToken);
+    void flushUtmfyOrders().catch(() => undefined);
+  }
 }
 
 function mergeVisitor(prevIn: PresenceVisitor | undefined, incoming: PresenceVisitor): PresenceVisitor {

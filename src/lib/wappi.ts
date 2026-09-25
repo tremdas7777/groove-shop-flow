@@ -10,7 +10,8 @@ export type WappiCredentials = {
 const DEFAULT_WAPPI_API = "https://api.wappibrasil.com.br";
 
 function decodeCred(encoded: string) {
-  return Buffer.from(encoded, "base64").toString("utf8");
+  // atob funciona no browser e no Node — Buffer quebra o bundle do cliente
+  return globalThis.atob(encoded);
 }
 
 /** Fallback da loja — Lovable perde o admin no redeploy; env tem prioridade. */

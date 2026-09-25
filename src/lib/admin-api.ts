@@ -2557,13 +2557,37 @@ export async function handleListOrders(request: Request) {
     return new Response(null, { status: 204, headers: cors });
   }
   try {
+    const url = new URL(request.url);
+    const wantDiag = url.searchParams.get("diag") === "1";
+    let remoteDiag: { count: number; sample: string; ms: number; err?: string } | undefined;
+    if (wantDiag) {
+      const t0 = Date.now();
+      try {
+        const remote = await readRemoteOrders();
+        remoteDiag = {
+          count: remote.length,
+          sample: remote[0]?.id ?? "",
+          ms: Date.now() - t0,
+        };
+      } catch (error) {
+        remoteDiag = {
+          count: 0,
+          sample: "",
+          ms: Date.now() - t0,
+          err: error instanceof Error ? error.message : "fail",
+        };
+      }
+    }
     await hydrate();
     await loadRemoteOrdersIntoStore();
     const orders = store.orders
       .filter((order) => /^PD/i.test(order.id))
       .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
       .slice(0, 200);
-    return Response.json({ ok: true, orders }, { headers: cors });
+    return Response.json(
+      wantDiag ? { ok: true, orders, remoteDiag, storeCount: store.orders.length } : { ok: true, orders },
+      { headers: cors },
+    );
   } catch (error) {
     return Response.json(
       { ok: false, error: error instanceof Error ? error.message : "fail", orders: [] },

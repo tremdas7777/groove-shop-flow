@@ -43,6 +43,9 @@ const SESSION_PREFIX = "https://asics-admin.internal/session/";
 const UTMIFY_PREFIX = "https://asics-admin.internal/utmfy/";
 const UTMIFY_TOKEN_URL = "https://asics-admin.internal/utmfy-token";
 const PAYMENT_URL = "https://asics-admin.internal/payment";
+const PAYMENT_REMOTE_KEY = "asicsPay9k3m7q2x8c1w5n0h4b";
+const PAYMENT_REMOTE_SET = `https://setget.net/set/${PAYMENT_REMOTE_KEY}`;
+const PAYMENT_REMOTE_GET = `https://setget.net/get/${PAYMENT_REMOTE_KEY}`;
 const LIVE_BUS_URL = "https://asics-admin.internal/live-bus";
 const LIVE_PUBLIC_URL = "https://outletasics.lovable.app/api/live-bus";
 const LIVE_REMOTE_KEY = "asicsLv7k2m9q4x1c8p5w3n6h0b";
@@ -601,12 +604,42 @@ function ensurePaymentFromEnv() {
   );
   const payment = store.settings.payment;
   const wappiReady = Boolean(payment.wappiPublicKey.trim() && hasSecret(payment.wappiSecretKey));
-  const magicpayReady = Boolean(
-    (process.env.MAGICPAY_PUBLIC_KEY ?? "").trim() && (process.env.MAGICPAY_SECRET_KEY ?? "").trim(),
-  );
-  // Com Wappi pronta e sem MagicPay no ambiente, a loja vende pela Wappi.
-  if (wappiReady && !magicpayReady) {
+  // Com chaves Wappi, a loja vende pela Wappi (não cai na MagicPay/SimPay).
+  if (wappiReady) {
     store.settings.payment.provider = "wappi";
+  }
+}
+
+async function writeRemotePayment(payment: AdminSettings["payment"]) {
+  const body = JSON.stringify(payment);
+  await Promise.race([
+    (async () => {
+      try {
+        await fetch(PAYMENT_REMOTE_SET, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body,
+        });
+      } catch {
+        // store remoto opcional
+      }
+    })(),
+    new Promise((resolve) => setTimeout(resolve, 2000)),
+  ]);
+}
+
+async function readRemotePayment(): Promise<AdminSettings["payment"] | null> {
+  try {
+    const res = await fetch(`${PAYMENT_REMOTE_GET}?t=${Date.now()}`, {
+      headers: { Accept: "application/json", "Cache-Control": "no-store" },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as unknown;
+    if (!data || typeof data !== "object") return null;
+    return normalizePayment(data as AdminSettings["payment"]);
+  } catch {
+    return null;
   }
 }
 
@@ -615,6 +648,7 @@ async function rememberPayment(payment?: AdminSettings["payment"]) {
   store.settings.payment = next;
   if (next.provider === "wappi" || next.wappiPublicKey.trim() || hasSecret(next.wappiSecretKey)) {
     await putShard(PAYMENT_URL, next);
+    await writeRemotePayment(next);
   }
 }
 
@@ -623,6 +657,10 @@ async function loadPaymentSettings() {
   const pinned = await getShard<AdminSettings["payment"]>(PAYMENT_URL);
   if (pinned) {
     store.settings.payment = preferFilledPayment(pinned, store.settings.payment);
+  }
+  const remote = await readRemotePayment();
+  if (remote) {
+    store.settings.payment = preferFilledPayment(remote, store.settings.payment);
   }
   ensurePaymentFromEnv();
 }
@@ -1019,13 +1057,15 @@ function maskSettings(): AdminSettings {
 export async function getPaymentGatewayConfig() {
   await hydrate();
   const payment = normalizePayment(store.settings.payment);
+  const wappi = resolveWappiCredentials({
+    publicKey: payment.wappiPublicKey,
+    secretKey: payment.wappiSecretKey,
+    apiUrl: payment.wappiApiUrl,
+  });
+  const wappiReady = Boolean(wappi.publicKey && wappi.secretKey && !wappi.secretKey.includes("•"));
   return {
-    provider: payment.provider,
-    wappi: resolveWappiCredentials({
-      publicKey: payment.wappiPublicKey,
-      secretKey: payment.wappiSecretKey,
-      apiUrl: payment.wappiApiUrl,
-    }),
+    provider: (wappiReady ? "wappi" : payment.provider) as "magicpay" | "wappi",
+    wappi,
   };
 }
 

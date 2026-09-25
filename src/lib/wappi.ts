@@ -200,7 +200,6 @@ export async function createWappiPixTransaction(data: CreateWappiPixInput, creds
     pix: { expires_in_days: 1 },
     // Docs pedem JSON object (não string)
     metadata: {
-      provider_name: "ASICS Brasil",
       orderId: data.orderId,
       sessionId: data.order?.sessionId,
     },

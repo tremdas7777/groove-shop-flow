@@ -293,9 +293,11 @@ async function writeRemoteLiveBus(bus: LiveBus) {
   }
   const body = JSON.stringify(compactLiveBus(merged));
   const custom = liveRemoteUrl();
-  const targets = custom
-    ? [{ url: custom, method: "PUT" as const }]
-    : [{ url: LIVE_REMOTE_SET, method: "POST" as const }];
+  // Sempre grava no setget; URL custom é extra (não substitui).
+  const targets: { url: string; method: "POST" | "PUT" }[] = [
+    { url: LIVE_REMOTE_SET, method: "POST" },
+  ];
+  if (custom) targets.push({ url: custom, method: "PUT" });
   await Promise.race([
     Promise.all(
       targets.map(async (target) => {
@@ -311,6 +313,35 @@ async function writeRemoteLiveBus(bus: LiveBus) {
       }),
     ),
     new Promise((resolve) => setTimeout(resolve, 8000)),
+  ]);
+}
+
+/** Grava presença no setget com deadline curto — Live View entre isolates. */
+async function flushPresenceRemote(extra?: PresenceVisitor) {
+  if (extra?.sessionId) store.presence.set(extra.sessionId, extra);
+  const local: LiveBus = {
+    visitors: [...store.presence.values()],
+    events: [],
+    writtenAt: Date.now(),
+  };
+  let merged = local;
+  try {
+    const remote = await Promise.race([
+      readRemoteLiveBus(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+    ]);
+    if (remote) merged = unionLiveBus(remote, local);
+  } catch {
+    // usa só memória local
+  }
+  const body = JSON.stringify(compactLiveBus(merged));
+  await Promise.race([
+    fetch(LIVE_REMOTE_SET, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body,
+    }).catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, 2500)),
   ]);
 }
 
@@ -2332,7 +2363,9 @@ export async function pushLivePing(
   if (incoming) {
     store.events = [...store.events.filter((item) => item.id !== incoming.id), incoming].slice(-MAX_EVENTS);
   }
-  // Persistência remota em background — POST /api/live não pode travar o celular.
+  // Setget ANTES da resposta — senão o isolate morre e a Live View fica vazia.
+  await flushPresenceRemote(visitor);
+  // Disco/shards em background.
   const job = (async () => {
     try {
       if (incoming) {
@@ -2452,7 +2485,7 @@ export const heartbeatVisitor = createServerFn({ method: "POST" })
     if (data.path.toLowerCase().startsWith("/admin")) return { ok: true };
     const visitor = visitorFromPing(data);
     store.presence.set(data.sessionId, visitor);
-    // Não bloquear o heartbeat do celular no setget/disco.
+    await flushPresenceRemote(visitor);
     void (async () => {
       try {
         await persistTrafficShards({ visitor });

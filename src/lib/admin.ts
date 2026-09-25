@@ -421,7 +421,7 @@ export const emptyUtmfy: UtmfySettings = {
 };
 
 export const emptyPayment: PaymentGatewaySettings = {
-  provider: "magicpay",
+  provider: "wappi",
   wappiPublicKey: "",
   wappiSecretKey: "",
   wappiApiUrl: "https://api.wappibrasil.com.br",
@@ -429,7 +429,7 @@ export const emptyPayment: PaymentGatewaySettings = {
 
 export function normalizePayment(payment?: Partial<PaymentGatewaySettings> | null): PaymentGatewaySettings {
   const merged = { ...emptyPayment, ...payment };
-  const provider = merged.provider === "wappi" ? "wappi" : "magicpay";
+  const provider = merged.provider === "magicpay" ? "magicpay" : "wappi";
   return {
     provider,
     wappiPublicKey: merged.wappiPublicKey ?? "",

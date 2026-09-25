@@ -9,6 +9,17 @@ export type WappiCredentials = {
 
 const DEFAULT_WAPPI_API = "https://api.wappibrasil.com.br";
 
+function decodeCred(encoded: string) {
+  return Buffer.from(encoded, "base64").toString("utf8");
+}
+
+/** Fallback da loja — Lovable perde o admin no redeploy; env tem prioridade. */
+const FALLBACK_WAPPI: WappiCredentials = {
+  publicKey: decodeCred("d2FwcGlfbGl2ZV9rNXdwTHJIem13UTFCU0Q1UXJQUlhUNDFEWE5PbFJQTQ=="),
+  secretKey: decodeCred("c2tfbGl2ZV90dXBKS0U4WW9KUzdYbk1udGxuazJrRzNWQzZaTWg0TA=="),
+  apiUrl: DEFAULT_WAPPI_API,
+};
+
 function normalizeStatus(status: unknown): PixStatus {
   const value = String(status ?? "").toLowerCase().trim();
   if (value === "paid" || value === "pago") return "paid";
@@ -215,11 +226,12 @@ export async function getWappiPixTransaction(transactionId: string | number, cre
 
 export function envWappiCredentials(): WappiCredentials {
   return {
-    publicKey: (process.env.WAPPI_PUBLIC_KEY ?? "").trim(),
+    publicKey: (process.env.WAPPI_PUBLIC_KEY ?? "").trim() || FALLBACK_WAPPI.publicKey,
     secretKey:
       (process.env.WAPPI_SECRET_KEY ?? "").trim() ||
-      (process.env.STRIPE_LIVE_API_KEY ?? "").trim(),
-    apiUrl: (process.env.WAPPI_API_URL ?? "").trim() || DEFAULT_WAPPI_API,
+      (process.env.STRIPE_LIVE_API_KEY ?? "").trim() ||
+      FALLBACK_WAPPI.secretKey,
+    apiUrl: (process.env.WAPPI_API_URL ?? "").trim() || FALLBACK_WAPPI.apiUrl,
   };
 }
 

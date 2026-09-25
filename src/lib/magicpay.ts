@@ -255,13 +255,20 @@ function withGateway(pix: MagicPayPix, gateway: "magicpay" | "wappi") {
 export const createStorePix = createServerFn({ method: "POST" })
   .validator(createPixInput)
   .handler(async ({ data }) => {
+    const { createWappiPixTransaction, envWappiCredentials } = await import("@/lib/wappi");
     const config = await resolveGateway();
-    const gateway = config.provider;
+    const env = envWappiCredentials();
+    const wappi =
+      config.wappi.publicKey && config.wappi.secretKey && !config.wappi.secretKey.includes("•")
+        ? config.wappi
+        : env;
+    // Sempre Wappi quando há chaves — não deixa cair na MagicPay/SimPay.
+    const gateway =
+      wappi.publicKey && wappi.secretKey ? ("wappi" as const) : config.provider;
 
     if (gateway === "wappi") {
       try {
-        const { createWappiPixTransaction } = await import("@/lib/wappi");
-        const result = await createWappiPixTransaction(data, config.wappi);
+        const result = await createWappiPixTransaction(data, wappi);
         if (!result.ok) return result;
         if (data.order) {
           void import("@/lib/admin-api")
@@ -295,7 +302,6 @@ export const createStorePix = createServerFn({ method: "POST" })
       gateway: "magicpay" as const,
     };
   });
-
 export const getStorePix = createServerFn({ method: "GET" })
   .validator(
     z.object({

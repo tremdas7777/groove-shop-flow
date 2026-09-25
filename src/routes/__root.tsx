@@ -12,6 +12,7 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { CartProvider } from "../lib/cart";
+import { CartDrawer } from "../components/CartDrawer";
 import { TrackingProvider } from "../components/TrackingProvider";
 import { Toaster } from "../components/ui/sonner";
 import { attributionHeadScript } from "../lib/tracking";
@@ -152,6 +153,7 @@ function RootComponent() {
       <CartProvider>
         <TrackingProvider>
           <Outlet />
+          <CartDrawer />
           <Toaster />
         </TrackingProvider>
       </CartProvider>

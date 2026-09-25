@@ -80,6 +80,7 @@ import {
 import { UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 import { LiveView } from "@/components/admin/LiveView";
 import { AbandonedCarts } from "@/components/admin/AbandonedCarts";
+import { ZedyPanel } from "@/components/admin/ZedyPanel";
 
 type Tab =
   | "visao"
@@ -92,6 +93,7 @@ type Tab =
   | "pixels"
   | "utmify"
   | "gateway"
+  | "zedy"
   | "config";
 
 const tabs: { id: Tab; label: string; icon: typeof Radio }[] = [
@@ -105,6 +107,7 @@ const tabs: { id: Tab; label: string; icon: typeof Radio }[] = [
   { id: "pixels", label: "Pixels", icon: Target },
   { id: "utmify", label: "UTMify", icon: Activity },
   { id: "gateway", label: "Gateway", icon: CreditCard },
+  { id: "zedy", label: "Zedy", icon: ShoppingBag },
   { id: "config", label: "Configurações", icon: Settings },
 ];
 
@@ -522,6 +525,7 @@ export function AdminApp() {
                 onSave={() => void saveSettings(token, settingsRef.current, setSettings)}
               />
             )}
+            {tab === "zedy" && <ZedyPanel />}
             {tab === "config" && (
               <ConfigPanel
                 settings={settings}

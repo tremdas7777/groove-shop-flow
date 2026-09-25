@@ -1,4 +1,4 @@
-import { createFileRoute, Link, notFound, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { Heart, Ruler, Share2, Truck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ProductCard } from "@/components/ProductCard";
@@ -47,7 +47,6 @@ export const Route = createFileRoute("/produto/$id")({
 function ProductPage() {
   const { product } = Route.useLoaderData();
   const { add } = useCart();
-  const navigate = useNavigate();
   const [foto, setFoto] = useState(0);
   const [size, setSize] = useState<string>("");
   const [added, setAdded] = useState(false);
@@ -94,7 +93,7 @@ function ProductPage() {
 
   const handleBuyNow = () => {
     if (!addToBag()) return;
-    void navigate({ to: "/checkout" });
+    // Mantém a sacola aberta; o checkout externo Zedy é iniciado pelo drawer/página.
   };
 
   return (

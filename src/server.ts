@@ -76,6 +76,20 @@ export default {
         const { handleListOrders } = await import("./lib/admin-api");
         return await handleListOrders(request);
       }
+      if (
+        url.pathname === "/api/public/zedy-webhook" &&
+        (request.method === "POST" || request.method === "OPTIONS")
+      ) {
+        const { handleZedyWebhook } = await import("./lib/zedy-server");
+        return await handleZedyWebhook(request);
+      }
+      if (
+        url.pathname === "/api/loja/v1/cart/create-checkout" &&
+        (request.method === "POST" || request.method === "OPTIONS")
+      ) {
+        const { handleZedyCreateCheckoutHttp } = await import("./lib/zedy-server");
+        return await handleZedyCreateCheckoutHttp(request);
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

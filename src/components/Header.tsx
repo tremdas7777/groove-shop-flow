@@ -21,7 +21,7 @@ export function Header({
 }: {
   onSelectCategory?: (category: string) => void;
 }) {
-  const { count } = useCart();
+  const { count, setOpen } = useCart();
   const navigate = useNavigate();
   const [searchOpen, setSearchOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -112,9 +112,10 @@ export function Header({
                 4
               </span>
             </button>
-            <Link
-              to="/carrinho"
+            <button
+              type="button"
               aria-label="Ver sacola"
+              onClick={() => setOpen(true)}
               className="relative flex h-11 w-11 items-center justify-center text-primary"
             >
               <ShoppingBag className="h-5 w-5" />
@@ -123,7 +124,7 @@ export function Header({
                   {count}
                 </span>
               )}
-            </Link>
+            </button>
           </div>
         </div>
       </header>
@@ -214,13 +215,16 @@ export function Header({
                 {item.label}
               </button>
             ))}
-            <Link
-              to="/carrinho"
-              onClick={() => setMenuOpen(false)}
-              className="border-b border-border py-4 text-[16px] font-medium"
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                setOpen(true);
+              }}
+              className="border-b border-border py-4 text-left text-[16px] font-medium"
             >
               Minha Sacola
-            </Link>
+            </button>
           </nav>
         </div>
       )}
@@ -233,7 +237,7 @@ export function MobileBottomNav({
 }: {
   onOpenMenu?: () => void;
 }) {
-  const { count } = useCart();
+  const { count, setOpen } = useCart();
   return (
     <nav className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex h-[calc(3.5rem+env(safe-area-inset-bottom))] items-center justify-around border-t border-border bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm lg:hidden">
       <Link
@@ -261,9 +265,10 @@ export function MobileBottomNav({
       >
         <Menu className="h-5 w-5" />
       </button>
-      <Link
-        to="/carrinho"
+      <button
+        type="button"
         aria-label="Ver sacola"
+        onClick={() => setOpen(true)}
         className="pointer-events-auto relative flex h-11 w-11 items-center justify-center text-primary"
       >
         <ShoppingBag className="h-5 w-5" />
@@ -272,7 +277,7 @@ export function MobileBottomNav({
             {count}
           </span>
         )}
-      </Link>
+      </button>
     </nav>
   );
 }

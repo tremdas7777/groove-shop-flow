@@ -17,6 +17,8 @@ export interface CartItem {
 interface CartContextValue {
   items: CartItem[];
   count: number;
+  open: boolean;
+  setOpen: (open: boolean) => void;
   add: (id: number, qty?: number, size?: string) => void;
   remove: (id: number, size?: string) => void;
   setQty: (id: number, qty: number, size?: string) => void;
@@ -26,9 +28,14 @@ interface CartContextValue {
 const CartContext = createContext<CartContextValue | null>(null);
 
 const STORAGE_KEY = "asics-shop-cart";
+const OPEN_KEY = "asics-shop-cart-open";
 
 function sameLine(a: CartItem, id: number, size?: string) {
   return a.id === id && (a.size ?? "") === (size ?? "");
+}
+
+function clampQty(qty: number) {
+  return Math.min(99, Math.max(0, Math.floor(qty)));
 }
 
 function writeCart(items: CartItem[]) {
@@ -42,12 +49,22 @@ function writeCart(items: CartItem[]) {
 
 export function CartProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
+  const [open, setOpenState] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) setItems(JSON.parse(raw) as CartItem[]);
+      if (raw) {
+        const parsed = JSON.parse(raw) as CartItem[];
+        setItems(
+          parsed
+            .filter((i) => i && Number.isFinite(i.id) && i.qty > 0)
+            .map((i) => ({ ...i, qty: clampQty(i.qty) || 1 })),
+        );
+      }
+      const wasOpen = window.localStorage.getItem(OPEN_KEY);
+      if (wasOpen === "1") setOpenState(true);
     } catch {
       // carrinho vazio se storage inválido
     }
@@ -56,23 +73,35 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-    } catch {
-      // ignora falha de storage
-    }
+    writeCart(items);
   }, [items, hydrated]);
 
-  const add = useCallback((id: number, qty = 1, size?: string) => {
-    setItems((prev) => {
-      const existing = prev.find((i) => sameLine(i, id, size));
-      const next = existing
-        ? prev.map((i) => (sameLine(i, id, size) ? { ...i, qty: i.qty + qty } : i))
-        : [...prev, { id, qty, size }];
-      writeCart(next);
-      return next;
-    });
+  const setOpen = useCallback((next: boolean) => {
+    setOpenState(next);
+    try {
+      window.localStorage.setItem(OPEN_KEY, next ? "1" : "0");
+    } catch {
+      // ignore
+    }
   }, []);
+
+  const add = useCallback(
+    (id: number, qty = 1, size?: string) => {
+      setItems((prev) => {
+        const addQty = clampQty(qty) || 1;
+        const existing = prev.find((i) => sameLine(i, id, size));
+        const next = existing
+          ? prev.map((i) =>
+              sameLine(i, id, size) ? { ...i, qty: clampQty(i.qty + addQty) || 1 } : i,
+            )
+          : [...prev, { id, qty: addQty, size }];
+        writeCart(next);
+        return next;
+      });
+      setOpen(true);
+    },
+    [setOpen],
+  );
 
   const remove = useCallback((id: number, size?: string) => {
     setItems((prev) => {
@@ -84,10 +113,11 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
   const setQty = useCallback((id: number, qty: number, size?: string) => {
     setItems((prev) => {
+      const nextQty = clampQty(qty);
       const next =
-        qty <= 0
+        nextQty <= 0
           ? prev.filter((i) => !sameLine(i, id, size))
-          : prev.map((i) => (sameLine(i, id, size) ? { ...i, qty } : i));
+          : prev.map((i) => (sameLine(i, id, size) ? { ...i, qty: nextQty } : i));
       writeCart(next);
       return next;
     });
@@ -102,12 +132,14 @@ export function CartProvider({ children }: { children: ReactNode }) {
     () => ({
       items,
       count: items.reduce((acc, i) => acc + i.qty, 0),
+      open,
+      setOpen,
       add,
       remove,
       setQty,
       clear,
     }),
-    [items, add, remove, setQty, clear],
+    [items, open, setOpen, add, remove, setQty, clear],
   );
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;

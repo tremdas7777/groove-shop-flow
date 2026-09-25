@@ -1,11 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Minus, Plus, Trash2 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { CheckoutShell } from "@/components/CheckoutShell";
 import { ProductCard } from "@/components/ProductCard";
 import { cartLineKey, useCart } from "@/lib/cart";
 import { formatBRL, getProduct, parsePrice, products } from "@/lib/products";
 import { track } from "@/lib/tracking";
+import { createZedyStoreCheckout } from "@/lib/zedy-server";
 
 export const Route = createFileRoute("/carrinho")({
   head: () => ({
@@ -19,7 +21,8 @@ export const Route = createFileRoute("/carrinho")({
 });
 
 function CartPage() {
-  const { items, setQty, remove } = useCart();
+  const { items, setQty, remove, setOpen } = useCart();
+  const [busy, setBusy] = useState(false);
 
   const detailed = items
     .map((i) => ({ item: i, product: getProduct(i.id) }))
@@ -48,6 +51,45 @@ function CartPage() {
     // só no mount da sacola
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const checkout = async () => {
+    if (!detailed.length) {
+      toast.error("Sua sacola está vazia.");
+      return;
+    }
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await createZedyStoreCheckout({
+        data: {
+          items: detailed.map(({ item }) => ({
+            id: item.id,
+            size: item.size,
+            qty: item.qty,
+          })),
+        },
+      });
+      if (!result.ok) {
+        const missing = "missing" in result && Array.isArray(result.missing) ? result.missing : [];
+        if (missing.length) {
+          toast.error(
+            `Não encontrado na Zedy: ${missing
+              .slice(0, 3)
+              .map((m) => `${m.title}${m.size ? ` (${m.size})` : ""}`)
+              .join(", ")}`,
+          );
+        } else {
+          toast.error(result.error || "Não foi possível criar o checkout.");
+        }
+        return;
+      }
+      window.location.href = result.checkoutUrl;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Falha no checkout Zedy.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <CheckoutShell>
@@ -157,7 +199,7 @@ function CartPage() {
                       </span>
                       <button
                         type="button"
-                        onClick={() => setQty(item.id, item.qty + 1, item.size)}
+                        onClick={() => setQty(item.id, Math.min(99, item.qty + 1), item.size)}
                         className="flex h-11 w-11 items-center justify-center text-primary"
                         aria-label="Aumentar quantidade"
                       >
@@ -193,22 +235,34 @@ function CartPage() {
               )}
               <div className="flex justify-between">
                 <dt className="text-muted-foreground">Frete</dt>
-                <dd>Grátis, padrão ou expresso</dd>
+                <dd>Calculado na Zedy</dd>
               </div>
               <div className="flex justify-between border-t border-border pt-3 text-[16px] font-semibold">
                 <dt>Total</dt>
                 <dd>{formatBRL(subtotal)}</dd>
               </div>
             </dl>
-            <Link
-              to="/checkout"
-              className="mt-5 flex h-12 items-center justify-center rounded-full bg-primary text-[14px] font-semibold text-white"
+            <p className="mt-3 text-[11px] text-muted-foreground">
+              O valor final é confirmado no checkout seguro da Zedy.
+            </p>
+            <button
+              type="button"
+              disabled={!detailed.length || busy}
+              onClick={() => void checkout()}
+              className="mt-5 flex h-12 w-full items-center justify-center rounded-full bg-primary text-[14px] font-semibold text-white disabled:opacity-50"
             >
-              Finalizar compra
-            </Link>
+              {busy ? "Abrindo checkout…" : "Finalizar compra"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className="mt-3 flex h-10 w-full items-center justify-center text-[13px] text-primary underline underline-offset-2"
+            >
+              Abrir sacola rápida
+            </button>
             <Link
               to="/"
-              className="mt-3 flex h-10 items-center justify-center text-[13px] text-primary underline underline-offset-2"
+              className="mt-1 flex h-10 items-center justify-center text-[13px] text-primary underline underline-offset-2"
             >
               Escolher produtos
             </Link>

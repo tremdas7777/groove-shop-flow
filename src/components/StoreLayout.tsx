@@ -1,5 +1,17 @@
 import type { ReactNode } from "react";
+import { useRouterState } from "@tanstack/react-router";
 import { Header, MobileBottomNav, StoreFooter } from "@/components/Header";
+
+function hideMobileNav(path: string) {
+  const p = path.toLowerCase();
+  return (
+    p.startsWith("/produto") ||
+    p.startsWith("/checkout") ||
+    p.startsWith("/pedido") ||
+    p.startsWith("/obrigado") ||
+    p.startsWith("/carrinho")
+  );
+}
 
 export function StoreLayout({
   children,
@@ -8,12 +20,21 @@ export function StoreLayout({
   children: ReactNode;
   onSelectCategory?: (category: string) => void;
 }) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const noBottomNav = hideMobileNav(pathname);
+
   return (
-    <div className="min-h-dvh bg-background pb-[calc(4rem+env(safe-area-inset-bottom))] lg:pb-0">
+    <div
+      className={
+        noBottomNav
+          ? "min-h-dvh bg-background"
+          : "min-h-dvh bg-background pb-[calc(4.5rem+env(safe-area-inset-bottom))] lg:pb-0"
+      }
+    >
       <Header onSelectCategory={onSelectCategory} />
       {children}
       <StoreFooter />
-      <MobileBottomNav />
+      {!noBottomNav && <MobileBottomNav />}
     </div>
   );
 }

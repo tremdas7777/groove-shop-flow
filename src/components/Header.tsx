@@ -235,12 +235,12 @@ export function MobileBottomNav({
 }) {
   const { count } = useCart();
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 flex h-[calc(3.5rem+env(safe-area-inset-bottom))] items-center justify-around border-t border-border bg-white pb-[env(safe-area-inset-bottom)] lg:hidden">
+    <nav className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex h-[calc(3.5rem+env(safe-area-inset-bottom))] items-center justify-around border-t border-border bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm lg:hidden">
       <Link
         to="/"
         search={(prev) => prev}
         aria-label="Ir para a home"
-        className="flex h-11 w-11 items-center justify-center text-primary"
+        className="pointer-events-auto flex h-11 w-11 items-center justify-center text-primary"
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
           <path
@@ -253,7 +253,7 @@ export function MobileBottomNav({
       <button
         type="button"
         aria-label="Abrir menu"
-        className="flex h-11 w-11 items-center justify-center text-primary"
+        className="pointer-events-auto flex h-11 w-11 items-center justify-center text-primary"
         onClick={() => {
           onOpenMenu?.();
           window.dispatchEvent(new Event(OPEN_MENU_EVENT));
@@ -264,7 +264,7 @@ export function MobileBottomNav({
       <Link
         to="/carrinho"
         aria-label="Ver sacola"
-        className="relative flex h-11 w-11 items-center justify-center text-primary"
+        className="pointer-events-auto relative flex h-11 w-11 items-center justify-center text-primary"
       >
         <ShoppingBag className="h-5 w-5" />
         {count > 0 && (
@@ -279,7 +279,7 @@ export function MobileBottomNav({
 
 export function StoreFooter() {
   return (
-    <footer className="mt-10 border-t border-border bg-white pb-24 sm:mt-16 lg:pb-0">
+    <footer className="mt-10 border-t border-border bg-white pb-8 sm:mt-16 lg:pb-0">
       <div className="mx-auto grid max-w-[1280px] gap-10 px-4 py-12 sm:grid-cols-2 lg:grid-cols-4">
         <div>
           <AsicsWordmark className="h-8 w-[90px]" />

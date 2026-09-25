@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   BarChart3,
+  CreditCard,
   Filter,
   LayoutDashboard,
   LogOut,
@@ -90,6 +91,7 @@ type Tab =
   | "produtos"
   | "pixels"
   | "utmify"
+  | "gateway"
   | "config";
 
 const tabs: { id: Tab; label: string; icon: typeof Radio }[] = [
@@ -102,6 +104,7 @@ const tabs: { id: Tab; label: string; icon: typeof Radio }[] = [
   { id: "produtos", label: "Produtos", icon: Package },
   { id: "pixels", label: "Pixels", icon: Target },
   { id: "utmify", label: "UTMify", icon: Activity },
+  { id: "gateway", label: "Gateway", icon: CreditCard },
   { id: "config", label: "Configurações", icon: Settings },
 ];
 
@@ -512,6 +515,13 @@ export function AdminApp() {
                 }}
               />
             )}
+            {tab === "gateway" && (
+              <GatewayPanel
+                settings={settings}
+                onChange={setSettings}
+                onSave={() => void saveSettings(token, settingsRef.current, setSettings)}
+              />
+            )}
             {tab === "config" && (
               <ConfigPanel
                 settings={settings}
@@ -563,7 +573,9 @@ function keepTypedSecrets(prev: AdminSettings, incoming: AdminSettings): AdminSe
       wappiPublicKey: incoming.payment?.wappiPublicKey || prev.payment?.wappiPublicKey || "",
       wappiSecretKey: keepSecret(incoming.payment?.wappiSecretKey, prev.payment?.wappiSecretKey),
       wappiApiUrl: incoming.payment?.wappiApiUrl || prev.payment?.wappiApiUrl || defaultSettings.payment.wappiApiUrl,
-      provider: incoming.payment?.provider || prev.payment?.provider || "magicpay",
+      provider: incoming.payment?.provider || prev.payment?.provider || "wappi",
+      wappiReady: incoming.payment?.wappiReady ?? prev.payment?.wappiReady,
+      magicpayReady: incoming.payment?.magicpayReady ?? prev.payment?.magicpayReady,
     },
   };
 }
@@ -669,7 +681,7 @@ async function saveSettings(
       },
     });
     setSettings(keepTypedSecrets(settings, next));
-    toast.success("Configurações salvas. Gateway e pixels valem para todos os visitantes.");
+    toast.success("Configurações salvas. Gateway ativo vale para todos os checkouts.");
   } catch {
     toast.success("Salvo neste navegador. Publique e configure o servidor para valer em todos os visitantes.");
   }
@@ -1411,6 +1423,148 @@ function UtmifyPanel({
   );
 }
 
+function GatewayPanel({
+  settings,
+  onChange,
+  onSave,
+}: {
+  settings: AdminSettings;
+  onChange: (settings: AdminSettings) => void;
+  onSave: () => void;
+}) {
+  const payment = settings.payment ?? defaultSettings.payment;
+  const setPayment = (partial: Partial<NonNullable<AdminSettings["payment"]>>) =>
+    onChange({
+      ...settings,
+      payment: { ...payment, ...partial },
+    });
+  const wappiReady = Boolean(
+    payment.wappiReady ?? (payment.wappiPublicKey.trim() && payment.wappiSecretKey.trim()),
+  );
+  const magicpayReady = Boolean(payment.magicpayReady);
+  const active = payment.provider === "magicpay" ? "magicpay" : "wappi";
+
+  return (
+    <div className="mx-auto max-w-2xl space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold">Gateway de pagamento</h2>
+        <p className="text-sm text-white/50">
+          Escolha qual gateway gera o PIX no checkout. Só o ativo é usado — sem misturar.
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={() => setPayment({ provider: "wappi" })}
+          className={cn(
+            "rounded-2xl border p-4 text-left transition",
+            active === "wappi"
+              ? "border-[#E0B761] bg-[#E0B761]/12 ring-1 ring-[#E0B761]/40"
+              : "border-white/10 bg-[#10182a] hover:border-white/25",
+          )}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-semibold">Wappi</p>
+            {active === "wappi" ? (
+              <span className="rounded-full bg-[#E0B761] px-2 py-0.5 text-[10px] font-bold uppercase text-[#001E62]">
+                Ativo
+              </span>
+            ) : (
+              <span className="text-[10px] uppercase text-white/35">Inativo</span>
+            )}
+          </div>
+          <p className="mt-2 text-xs text-white/50">
+            {wappiReady ? "Chaves configuradas" : "Sem chaves — preencha abaixo"}
+          </p>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setPayment({ provider: "magicpay" })}
+          className={cn(
+            "rounded-2xl border p-4 text-left transition",
+            active === "magicpay"
+              ? "border-[#E0B761] bg-[#E0B761]/12 ring-1 ring-[#E0B761]/40"
+              : "border-white/10 bg-[#10182a] hover:border-white/25",
+          )}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-semibold">MagicPay</p>
+            {active === "magicpay" ? (
+              <span className="rounded-full bg-[#E0B761] px-2 py-0.5 text-[10px] font-bold uppercase text-[#001E62]">
+                Ativo
+              </span>
+            ) : (
+              <span className="text-[10px] uppercase text-white/35">Inativo</span>
+            )}
+          </div>
+          <p className="mt-2 text-xs text-white/50">
+            {magicpayReady
+              ? "Chaves do ambiente OK"
+              : "Precisa MAGICPAY_PUBLIC_KEY / SECRET no ambiente"}
+          </p>
+        </button>
+      </div>
+
+      <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4 space-y-4">
+        <div>
+          <h3 className="font-medium">Wappi — credenciais</h3>
+          <p className="mt-1 text-sm text-white/50">
+            Docs:{" "}
+            <a
+              className="text-[#E0B761] underline"
+              href="https://app.wappibrasil.com.br/docs"
+              target="_blank"
+              rel="noreferrer"
+            >
+              app.wappibrasil.com.br/docs
+            </a>
+          </p>
+        </div>
+        <Field
+          label="Public Key"
+          value={payment.wappiPublicKey}
+          onChange={(wappiPublicKey) => setPayment({ wappiPublicKey })}
+          placeholder="pk_..."
+        />
+        <Field
+          label="Secret Key"
+          value={payment.wappiSecretKey}
+          onChange={(wappiSecretKey) => setPayment({ wappiSecretKey })}
+          placeholder="sk_..."
+          type="password"
+          secret
+        />
+        <Field
+          label="API URL"
+          value={payment.wappiApiUrl}
+          onChange={(wappiApiUrl) => setPayment({ wappiApiUrl })}
+          placeholder="https://api.wappibrasil.com.br"
+        />
+      </div>
+
+      <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+        <h3 className="font-medium">MagicPay — ambiente</h3>
+        <p className="mt-2 text-sm text-white/50">
+          Usa <code className="text-white/70">MAGICPAY_PUBLIC_KEY</code>,{" "}
+          <code className="text-white/70">MAGICPAY_SECRET_KEY</code> e opcionalmente{" "}
+          <code className="text-white/70">MAGICPAY_API_URL</code> no Lovable / servidor.
+        </p>
+        <p className={cn("mt-3 text-sm font-medium", magicpayReady ? "text-emerald-400" : "text-amber-300")}>
+          {magicpayReady ? "Ambiente pronto para MagicPay." : "Ambiente sem chaves MagicPay."}
+        </p>
+      </div>
+
+      <p className="text-xs text-white/40">
+        Gateway ativo agora: <strong className="text-white/80">{active === "wappi" ? "Wappi" : "MagicPay"}</strong>
+        . Clique em Salvar para valer em todos os checkouts.
+      </p>
+      <SaveButton onClick={onSave} />
+    </div>
+  );
+}
+
 function ConfigPanel({
   settings,
   token,
@@ -1425,17 +1579,12 @@ function ConfigPanel({
   onSeed: () => void;
 }) {
   const payment = settings.payment ?? defaultSettings.payment;
-  const setPayment = (partial: Partial<NonNullable<AdminSettings["payment"]>>) =>
-    onChange({
-      ...settings,
-      payment: { ...payment, ...partial },
-    });
 
   return (
     <div className="max-w-xl space-y-6">
       <div>
         <h2 className="text-xl font-semibold">Configurações</h2>
-        <p className="text-sm text-white/50">Gateway de PIX, nome da loja e webhook.</p>
+        <p className="text-sm text-white/50">Nome da loja, webhook e senha.</p>
       </div>
       <Field label="Nome da loja no admin" value={settings.storeName} onChange={(storeName) => onChange({ ...settings, storeName })} />
       <Field
@@ -1445,66 +1594,12 @@ function ConfigPanel({
         placeholder="https://..."
       />
 
-      <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4 space-y-4">
-        <div>
-          <h3 className="font-medium">Gateway de pagamento</h3>
-          <p className="mt-1 text-sm text-white/50">
-            Coloque as chaves uma vez e clique em Salvar — ficam gravadas no servidor para a loja
-            continuar vendendo. Docs da Wappi:{" "}
-            <a
-              className="underline text-[#E0B761]"
-              href="https://app.wappibrasil.com.br/docs"
-              target="_blank"
-              rel="noreferrer"
-            >
-              app.wappibrasil.com.br/docs
-            </a>
-          </p>
-        </div>
-        <label className="block text-xs text-white/50">
-          Gateway ativo
-          <select
-            value={payment.provider}
-            onChange={(e) => setPayment({ provider: e.target.value as "magicpay" | "wappi" })}
-            className="mt-1 h-11 w-full rounded-xl border border-white/10 bg-black/30 px-3 text-sm text-white"
-          >
-            <option value="magicpay">MagicPay</option>
-            <option value="wappi">Wappi</option>
-          </select>
-        </label>
-        {payment.provider === "wappi" && (
-          <div className="space-y-3 border-t border-white/8 pt-3">
-            <Field
-              label="Wappi Public Key"
-              value={payment.wappiPublicKey}
-              onChange={(wappiPublicKey) => setPayment({ wappiPublicKey })}
-              placeholder="pk_..."
-            />
-            <Field
-              label="Wappi Secret Key"
-              value={payment.wappiSecretKey}
-              onChange={(wappiSecretKey) => setPayment({ wappiSecretKey })}
-              placeholder="sk_..."
-              type="password"
-              secret
-            />
-            <Field
-              label="Wappi API URL"
-              value={payment.wappiApiUrl}
-              onChange={(wappiApiUrl) => setPayment({ wappiApiUrl })}
-              placeholder="https://api.wappibrasil.com.br"
-            />
-            <p className="text-xs text-white/40">
-              Depois de Salvar, o PIX usa a Wappi em todo checkout. As chaves não são apagadas em
-              redeploy.
-            </p>
-          </div>
-        )}
-        {payment.provider === "magicpay" && (
-          <p className="text-xs text-white/40">
-            MagicPay usa as chaves do ambiente (MAGICPAY_PUBLIC_KEY / MAGICPAY_SECRET_KEY).
-          </p>
-        )}
+      <div className="rounded-2xl border border-white/10 bg-[#10182a] p-4">
+        <h3 className="font-medium">Gateway de pagamento</h3>
+        <p className="mt-2 text-sm text-white/50">
+          Ativo: <strong className="text-white/80">{payment.provider === "wappi" ? "Wappi" : "MagicPay"}</strong>
+          . Para trocar ou editar chaves, use a aba <strong className="text-white/80">Gateway</strong>.
+        </p>
       </div>
 
       <SaveButton onClick={onSave} />

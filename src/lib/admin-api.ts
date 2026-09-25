@@ -669,12 +669,14 @@ function ensurePaymentFromEnv() {
     },
     store.settings.payment,
   );
-  const payment = store.settings.payment;
-  const wappiReady = Boolean(payment.wappiPublicKey.trim() && hasSecret(payment.wappiSecretKey));
-  // Com chaves Wappi, a loja vende pela Wappi (não cai na MagicPay/SimPay).
-  if (wappiReady) {
-    store.settings.payment.provider = "wappi";
-  }
+  // Não força Wappi — o admin escolhe o gateway ativo.
+}
+
+async function rememberPayment(payment?: AdminSettings["payment"]) {
+  const next = preferFilledPayment(payment, store.settings.payment);
+  store.settings.payment = next;
+  await putShard(PAYMENT_URL, next);
+  await writeRemotePayment(next);
 }
 
 async function writeRemotePayment(payment: AdminSettings["payment"]) {
@@ -723,15 +725,6 @@ function unwrapSetgetValue(payload: unknown): unknown {
     }
   }
   return raw;
-}
-
-async function rememberPayment(payment?: AdminSettings["payment"]) {
-  const next = preferFilledPayment(payment, store.settings.payment);
-  store.settings.payment = next;
-  if (next.provider === "wappi" || next.wappiPublicKey.trim() || hasSecret(next.wappiSecretKey)) {
-    await putShard(PAYMENT_URL, next);
-    await writeRemotePayment(next);
-  }
 }
 
 async function loadPaymentSettings() {
@@ -1238,7 +1231,15 @@ function maskSecret(value: string) {
   return value ? `••••${value.slice(-4)}` : "";
 }
 
+function magicPayEnvReady() {
+  return Boolean(
+    (process.env.MAGICPAY_PUBLIC_KEY ?? "").trim() && (process.env.MAGICPAY_SECRET_KEY ?? "").trim(),
+  );
+}
+
 function maskSettings(): AdminSettings {
+  const payment = normalizePayment(store.settings.payment);
+  const wappiReady = Boolean(payment.wappiPublicKey.trim() && hasSecret(payment.wappiSecretKey));
   return {
     ...store.settings,
     hasPin: Boolean(store.pinHash),
@@ -1248,8 +1249,10 @@ function maskSettings(): AdminSettings {
       apiToken: maskSecret(store.settings.utmfy.apiToken),
     },
     payment: {
-      ...normalizePayment(store.settings.payment),
-      wappiSecretKey: maskSecret(store.settings.payment?.wappiSecretKey ?? ""),
+      ...payment,
+      wappiSecretKey: maskSecret(payment.wappiSecretKey ?? ""),
+      wappiReady,
+      magicpayReady: magicPayEnvReady(),
     },
   };
 }
@@ -1264,8 +1267,10 @@ export async function getPaymentGatewayConfig() {
   });
   const wappiReady = Boolean(wappi.publicKey && wappi.secretKey && !wappi.secretKey.includes("•"));
   return {
-    provider: (wappiReady ? "wappi" : payment.provider) as "magicpay" | "wappi",
+    provider: payment.provider as "magicpay" | "wappi",
     wappi,
+    wappiReady,
+    magicpayReady: magicPayEnvReady(),
   };
 }
 

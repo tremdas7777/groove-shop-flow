@@ -251,52 +251,30 @@ function withGateway(pix: MagicPayPix, gateway: "magicpay" | "wappi") {
   return { ...pix, gateway };
 }
 
-/** Gateway ativo (MagicPay ou Wappi) — definido aqui para o servidor registrar o hash. */
+/** Gateway ativo (MagicPay ou Wappi) — respeita Admin → Gateway. */
 export const createStorePix = createServerFn({ method: "POST" })
   .validator(createPixInput)
   .handler(async ({ data }) => {
-    const { createWappiPixTransaction, envWappiCredentials } = await import("@/lib/wappi");
-    // Hot path do anúncio: usa fallback/env direto — sem hydrate/admin.
-    const env = envWappiCredentials();
-    let lastError = "Não foi possível gerar o PIX na Wappi.";
-    if (env.publicKey && env.secretKey) {
-      try {
-        const result = await createWappiPixTransaction(data, env);
-        if (!result.ok) {
-          lastError = result.error || lastError;
-        } else {
-          if (data.order) {
-            void import("@/lib/admin-api")
-              .then(({ commitStoreOrder }) =>
-                commitStoreOrder(
-                  {
-                    ...data.order!,
-                    gateway: "wappi",
-                    pix: result.pix,
-                    status: data.order?.status ?? "pending",
-                  },
-                  true,
-                ),
-              )
-              .catch(() => undefined);
-          }
-          return { ok: true as const, pix: withGateway(result.pix, "wappi"), gateway: "wappi" as const };
-        }
-      } catch (error) {
-        lastError = error instanceof Error ? error.message : lastError;
-      }
-    }
+    const config = await resolveGateway();
+    const provider = config.provider === "magicpay" ? "magicpay" : "wappi";
 
-    try {
-      const config = await resolveGateway();
+    if (provider === "wappi") {
+      const { createWappiPixTransaction, envWappiCredentials } = await import("@/lib/wappi");
+      const env = envWappiCredentials();
       const wappi =
         config.wappi.publicKey && config.wappi.secretKey && !config.wappi.secretKey.includes("•")
           ? config.wappi
           : env;
-      if (wappi.publicKey && wappi.secretKey) {
+      if (!wappi.publicKey || !wappi.secretKey) {
+        return {
+          ok: false as const,
+          error: "Wappi está ativa, mas sem chaves. Configure em Admin → Gateway.",
+        };
+      }
+      try {
         const result = await createWappiPixTransaction(data, wappi);
         if (!result.ok) {
-          return { ok: false as const, error: result.error || lastError };
+          return { ok: false as const, error: result.error || "Não foi possível gerar o PIX na Wappi." };
         }
         if (data.order) {
           void import("@/lib/admin-api")
@@ -314,12 +292,47 @@ export const createStorePix = createServerFn({ method: "POST" })
             .catch(() => undefined);
         }
         return { ok: true as const, pix: withGateway(result.pix, "wappi"), gateway: "wappi" as const };
+      } catch (error) {
+        return {
+          ok: false as const,
+          error: error instanceof Error ? error.message : "Não foi possível gerar o PIX na Wappi.",
+        };
       }
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : lastError;
     }
 
-    return { ok: false as const, error: lastError };
+    try {
+      const result = await createMagicPayPixTransaction(data);
+      if (!result.ok) {
+        return {
+          ok: false as const,
+          error: result.error || "Não foi possível gerar o PIX na MagicPay.",
+        };
+      }
+      if (data.order) {
+        void import("@/lib/admin-api")
+          .then(({ commitStoreOrder }) =>
+            commitStoreOrder(
+              {
+                ...data.order!,
+                gateway: "magicpay",
+                pix: result.pix,
+                status: data.order?.status ?? "pending",
+              },
+              true,
+            ),
+          )
+          .catch(() => undefined);
+      }
+      return { ok: true as const, pix: withGateway(result.pix, "magicpay"), gateway: "magicpay" as const };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error:
+          error instanceof Error
+            ? error.message
+            : "MagicPay está ativa, mas sem chaves no ambiente (MAGICPAY_PUBLIC_KEY / SECRET).",
+      };
+    }
   });
 export const getStorePix = createServerFn({ method: "GET" })
   .validator(

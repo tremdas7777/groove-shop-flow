@@ -56,6 +56,10 @@ export interface PaymentGatewaySettings {
   wappiPublicKey: string;
   wappiSecretKey: string;
   wappiApiUrl: string;
+  /** Snapshot do servidor — MagicPay com env configurado. */
+  magicpayReady?: boolean;
+  /** Snapshot do servidor — Wappi com chaves. */
+  wappiReady?: boolean;
 }
 
 export interface AdminSettings {

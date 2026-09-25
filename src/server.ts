@@ -64,6 +64,10 @@ export default {
         const { handleAdminLogin } = await import("./lib/admin-api");
         return await handleAdminLogin(request);
       }
+      if (url.pathname === "/api/admin-snapshot" && request.method === "POST") {
+        const { handleAdminSnapshot } = await import("./lib/admin-api");
+        return await handleAdminSnapshot(request);
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

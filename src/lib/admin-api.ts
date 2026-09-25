@@ -52,6 +52,11 @@ const PAYMENT_URL = "https://asics-admin.internal/payment";
 const PAYMENT_REMOTE_KEY = "asicsPay9k3m7q2x8c1w5n0h4b";
 const PAYMENT_REMOTE_SET = `https://setget.net/set/${PAYMENT_REMOTE_KEY}`;
 const PAYMENT_REMOTE_GET = `https://setget.net/get/${PAYMENT_REMOTE_KEY}`;
+/** Pedidos PD — sobrevive redeploy / isolates do Lovable. */
+const ORDERS_REMOTE_KEY = "asicsOrd8k2m5q9x1c4w7n3h0b";
+const ORDERS_REMOTE_SET = `https://setget.net/set/${ORDERS_REMOTE_KEY}`;
+const ORDERS_REMOTE_GET = `https://setget.net/get/${ORDERS_REMOTE_KEY}`;
+const ORDERS_REMOTE_MAX = 120;
 const LIVE_BUS_URL = "https://asics-admin.internal/live-bus";
 const LIVE_PUBLIC_URL = "https://outletasics.lovable.app/api/live-bus";
 const LIVE_REMOTE_KEY = "asicsLv7k2m9q4x1c8p5w3n6h0b";
@@ -685,6 +690,60 @@ async function loadPaymentSettings() {
   ensurePaymentFromEnv();
 }
 
+async function readRemoteOrders(): Promise<OrderSummary[]> {
+  try {
+    const res = await fetch(`${ORDERS_REMOTE_GET}?t=${Date.now()}`, {
+      headers: { Accept: "application/json", "Cache-Control": "no-store" },
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { orders?: OrderSummary[] } | OrderSummary[] | null;
+    const list = Array.isArray(data) ? data : Array.isArray(data?.orders) ? data.orders : [];
+    return list.filter((order) => order && typeof order === "object" && /^PD/i.test(String(order.id ?? "")));
+  } catch {
+    return [];
+  }
+}
+
+async function writeRemoteOrders(extra?: OrderSummary) {
+  const map = new Map<string, OrderSummary>();
+  for (const order of [...(await readRemoteOrders()), ...store.orders]) {
+    if (!order?.id || !/^PD/i.test(order.id)) continue;
+    const prev = map.get(order.id);
+    map.set(order.id, prev ? mergeOrders(prev, order) : order);
+  }
+  if (extra?.id && /^PD/i.test(extra.id)) {
+    const prev = map.get(extra.id);
+    map.set(extra.id, prev ? mergeOrders(prev, extra) : extra);
+  }
+  const orders = [...map.values()]
+    .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
+    .slice(0, ORDERS_REMOTE_MAX);
+  const body = JSON.stringify({ orders, writtenAt: Date.now() });
+  await Promise.race([
+    (async () => {
+      try {
+        await fetch(ORDERS_REMOTE_SET, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body,
+        });
+      } catch {
+        // remoto opcional
+      }
+    })(),
+    new Promise((resolve) => setTimeout(resolve, 2500)),
+  ]);
+}
+
+async function loadRemoteOrdersIntoStore() {
+  const remote = await readRemoteOrders();
+  if (!remote.length) return;
+  for (const order of remote) {
+    upsertOrderLocal(order);
+  }
+}
+
 function mergeUtmfy(disk?: Partial<AdminSettings["utmfy"]>) {
   const current = store.settings.utmfy ?? emptyUtmfy;
   const incoming = { ...emptyUtmfy, ...disk };
@@ -1094,6 +1153,7 @@ async function hydrate() {
   mergeUtmfy(store.settings.utmfy);
   ensureTrafficPixelsFromEnv();
   await loadPaymentSettings();
+  await loadRemoteOrdersIntoStore();
 }
 
 function publicSettings(): PublicTrackingSettings {
@@ -1939,32 +1999,39 @@ export async function commitStoreOrder(order: OrderSummary, notify = false) {
   const prev = store.orders.find((item) => item.id === order.id);
   upsertOrderLocal(order);
   const next = store.orders.find((item) => item.id === order.id) ?? order;
-  if (notify) {
-    try {
-      const nextPaid = next.status === "paid" || next.pix?.status === "paid";
-      const prevPaid = prev?.status === "paid" || prev?.pix?.status === "paid";
-      await notifyUtmfy(next);
-      if (!prev?.pixelsSent?.addPaymentInfo && !next.pixelsSent?.addPaymentInfo) {
-        await sendMetaCapi(next, "AddPaymentInfo");
-        await sendTikTokEvents(next, "AddPaymentInfo");
-        next.pixelsSent = { ...next.pixelsSent, addPaymentInfo: true };
-      }
-      if (nextPaid && !prevPaid && !next.pixelsSent?.purchase) {
-        await sendMetaCapi(next, "Purchase");
-        await sendTikTokEvents(next, "Purchase");
-        next.pixelsSent = { ...next.pixelsSent, purchase: true };
-      }
-      if (!prev) {
-        await sendWebhook("order.created", next);
-      } else if (prevPaid !== nextPaid || prev?.status !== next.status) {
-        await sendWebhook("order.updated", next);
-      }
-    } catch {
-      // PIX já existe; a gravação ainda tenta de novo
-    }
-  }
   await persistTrafficShards({ order: next });
+  void writeRemoteOrders(next).catch(() => undefined);
   await persist();
+  if (notify) {
+    // Notificações em background — não bloqueia QR / resposta do checkout
+    void (async () => {
+      try {
+        const nextPaid = next.status === "paid" || next.pix?.status === "paid";
+        const prevPaid = prev?.status === "paid" || prev?.pix?.status === "paid";
+        await notifyUtmfy(next);
+        if (!prev?.pixelsSent?.addPaymentInfo && !next.pixelsSent?.addPaymentInfo) {
+          await sendMetaCapi(next, "AddPaymentInfo");
+          await sendTikTokEvents(next, "AddPaymentInfo");
+          next.pixelsSent = { ...next.pixelsSent, addPaymentInfo: true };
+        }
+        if (nextPaid && !prevPaid && !next.pixelsSent?.purchase) {
+          await sendMetaCapi(next, "Purchase");
+          await sendTikTokEvents(next, "Purchase");
+          next.pixelsSent = { ...next.pixelsSent, purchase: true };
+        }
+        if (!prev) {
+          await sendWebhook("order.created", next);
+        } else if (prevPaid !== nextPaid || prev?.status !== next.status) {
+          await sendWebhook("order.updated", next);
+        }
+        await persistTrafficShards({ order: next });
+        void writeRemoteOrders(next).catch(() => undefined);
+        await persist();
+      } catch {
+        // PIX já existe; a gravação ainda tenta de novo
+      }
+    })();
+  }
   return next;
 }
 
@@ -2203,6 +2270,7 @@ export async function pushLivePing(
       if (stub) {
         upsertOrderLocal(stub);
         await persistTrafficShards({ order: stub });
+        void writeRemoteOrders(stub).catch(() => undefined);
       }
     }
     await persistTrafficShards({ event: incoming, visitor });
@@ -2288,6 +2356,7 @@ export const ingestStoreEvent = createServerFn({ method: "POST" })
       if (stub) {
         upsertOrderLocal(stub);
         await persistTrafficShards({ order: stub });
+        void writeRemoteOrders(stub).catch(() => undefined);
       }
     }
     await persistTrafficShards({ event: incoming, visitor });
@@ -2351,6 +2420,25 @@ export async function handleAdminLogin(request: Request) {
   }
 }
 
+export async function handleAdminSnapshot(request: Request) {
+  try {
+    const body = (await request.json()) as { token?: unknown; utmfyToken?: unknown };
+    const token = typeof body.token === "string" ? body.token : "";
+    const utmfyToken = typeof body.utmfyToken === "string" ? body.utmfyToken : undefined;
+    await hydrate();
+    await requireSession(token);
+    if (utmfyToken) await rememberUtmfyToken(utmfyToken);
+    await loadRemoteOrdersIntoStore();
+    await refreshPendingPix();
+    await syncMagicPayOrders();
+    await flushUtmfyOrders();
+    return Response.json(snapshot());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Sessão inválida.";
+    return Response.json({ error: message }, { status: 401 });
+  }
+}
+
 export const adminSetup = createServerFn({ method: "POST" })
   .validator(z.object({ pin: z.string().min(4).max(32) }))
   .handler(async ({ data }) => signInWithPin(data.pin));
@@ -2365,6 +2453,7 @@ export const getAdminSnapshot = createServerFn({ method: "POST" })
     await hydrate();
     await requireSession(data.token);
     if (data.utmfyToken) await rememberUtmfyToken(data.utmfyToken);
+    await loadRemoteOrdersIntoStore();
     await refreshPendingPix();
     await syncMagicPayOrders();
     await flushUtmfyOrders();

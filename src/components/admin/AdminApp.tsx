@@ -141,12 +141,27 @@ export function AdminApp() {
       if (!cancelled) setSnap((prev) => prev ?? local);
       try {
         const localToken = loadLocalSettings().utmfy?.apiToken ?? "";
-        const next = await getAdminSnapshot({
-          data: {
-            token,
-            utmfyToken: localToken && !localToken.includes("•") ? localToken : undefined,
-          },
-        });
+        const utmfyToken = localToken && !localToken.includes("•") ? localToken : undefined;
+        let next: AdminSnapshot | null = null;
+        try {
+          next = await getAdminSnapshot({
+            data: {
+              token,
+              utmfyToken,
+            },
+          });
+        } catch {
+          next = null;
+        }
+        if (!next) {
+          const res = await fetch("/api/admin-snapshot", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token, utmfyToken }),
+          });
+          if (res.ok) next = (await res.json()) as AdminSnapshot;
+        }
+        if (!next) throw new Error("snapshot offline");
         if (cancelled) return;
         const live = await fetch(`/api/live?t=${Date.now()}`, { cache: "no-store" })
           .then((res) => (res.ok ? res.json() : null))
@@ -161,7 +176,7 @@ export function AdminApp() {
         setServerHint(
           next.orders.some((order) => /^PD/i.test(order.id))
             ? ""
-            : "Servidor conectado, mas ainda sem pedidos PD da MagicPay.",
+            : "Servidor conectado. Pedidos novos aparecem assim que o PIX for gerado.",
         );
         setSnap(mergeLocal(next));
         const mergedSettings = keepTypedSecrets(loadLocalSettings(), next.settings);

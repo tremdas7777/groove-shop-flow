@@ -58,8 +58,11 @@ export function newId(prefix = "ev") {
 }
 
 export function detectDevice(ua = typeof navigator === "undefined" ? "" : navigator.userAgent): DeviceType {
+  // iPhone/iPod sempre mobile (mesmo com “pedir site desktop”).
+  if (/iPhone|iPod/i.test(ua)) return "mobile";
   if (/iPad|Tablet/i.test(ua)) return "tablet";
-  if (/Mobi|Android/i.test(ua)) return "mobile";
+  if (/Android/i.test(ua)) return /Mobile/i.test(ua) ? "mobile" : "tablet";
+  if (/Mobi/i.test(ua)) return "mobile";
   return "desktop";
 }
 

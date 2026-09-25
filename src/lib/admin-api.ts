@@ -2330,8 +2330,8 @@ export async function pushLivePing(
   ctx?: { waitUntil?: (job: Promise<unknown>) => void },
 ) {
   const sessionId = typeof raw.sessionId === "string" ? raw.sessionId.trim() : "";
-  const path = typeof raw.path === "string" ? raw.path : "";
-  if (!sessionId || !path || path.toLowerCase().startsWith("/admin")) return { ok: true };
+  const path = typeof raw.path === "string" && raw.path.trim() ? raw.path : "/";
+  if (!sessionId || path.toLowerCase().startsWith("/admin")) return { ok: true };
   const event =
     raw.event && typeof raw.event === "object" && typeof (raw.event as AnalyticsEvent).id === "string"
       ? (raw.event as AnalyticsEvent)

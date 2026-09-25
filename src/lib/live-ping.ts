@@ -38,7 +38,7 @@ export function buildLivePresence(extra: Record<string, unknown> = {}) {
   const lead = leadFromDraft();
   return {
     sessionId: getSessionId(),
-    path: window.location.pathname + window.location.search,
+    path: window.location.pathname + window.location.search || "/",
     title: document.title,
     device: detectDevice(),
     attribution: getAttribution(),
@@ -52,18 +52,7 @@ export function buildLivePresence(extra: Record<string, unknown> = {}) {
   };
 }
 
-export function pingStorePresence(extra: Record<string, unknown> = {}) {
-  if (typeof window === "undefined") return;
-  const payload = buildLivePresence(extra);
-  const body = JSON.stringify(payload);
-  try {
-    if (typeof navigator.sendBeacon === "function") {
-      const blob = new Blob([body], { type: "text/plain" });
-      if (navigator.sendBeacon("/api/live", blob)) return payload;
-    }
-  } catch {
-    // sendBeacon bloqueado
-  }
+function postLive(body: string) {
   void fetch("/api/live", {
     method: "POST",
     headers: { "content-type": "text/plain" },
@@ -71,5 +60,21 @@ export function pingStorePresence(extra: Record<string, unknown> = {}) {
     keepalive: true,
     credentials: "same-origin",
   }).catch(() => undefined);
+}
+
+export function pingStorePresence(extra: Record<string, unknown> = {}) {
+  if (typeof window === "undefined") return;
+  const payload = buildLivePresence(extra);
+  const body = JSON.stringify(payload);
+  // fetch sempre — no iPhone/Instagram o sendBeacon “ok” às vezes não entrega o body.
+  postLive(body);
+  try {
+    if (typeof navigator.sendBeacon === "function" && document.visibilityState === "hidden") {
+      const blob = new Blob([body], { type: "text/plain;charset=UTF-8" });
+      navigator.sendBeacon("/api/live", blob);
+    }
+  } catch {
+    // sendBeacon opcional
+  }
   return payload;
 }

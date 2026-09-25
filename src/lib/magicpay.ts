@@ -270,22 +270,21 @@ export const createStorePix = createServerFn({ method: "POST" })
       try {
         const result = await createWappiPixTransaction(data, wappi);
         if (!result.ok) return result;
-        // Grava no painel na hora (notify em background dentro do commit).
+        // QR na hora — gravação no painel/UTMify em background.
         if (data.order) {
-          try {
-            const { commitStoreOrder } = await import("@/lib/admin-api");
-            await commitStoreOrder(
-              {
-                ...data.order,
-                gateway: "wappi",
-                pix: result.pix,
-                status: data.order.status ?? "pending",
-              },
-              true,
-            );
-          } catch {
-            // PIX já existe; o /pedido ainda tenta gravar
-          }
+          void import("@/lib/admin-api")
+            .then(({ commitStoreOrder }) =>
+              commitStoreOrder(
+                {
+                  ...data.order!,
+                  gateway: "wappi",
+                  pix: result.pix,
+                  status: data.order?.status ?? "pending",
+                },
+                true,
+              ),
+            )
+            .catch(() => undefined);
         }
         return { ok: true as const, pix: withGateway(result.pix, "wappi"), gateway: "wappi" as const };
       } catch (error) {

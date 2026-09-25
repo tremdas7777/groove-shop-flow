@@ -692,11 +692,14 @@ async function loadPaymentSettings() {
 
 async function readRemoteOrders(): Promise<OrderSummary[]> {
   try {
-    const res = await fetch(`${ORDERS_REMOTE_GET}?t=${Date.now()}`, {
-      headers: { Accept: "application/json", "Cache-Control": "no-store" },
-      cache: "no-store",
-    });
-    if (!res.ok) return [];
+    const res = await Promise.race([
+      fetch(`${ORDERS_REMOTE_GET}?t=${Date.now()}`, {
+        headers: { Accept: "application/json", "Cache-Control": "no-store" },
+        cache: "no-store",
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+    ]);
+    if (!res || !res.ok) return [];
     const data = (await res.json()) as { orders?: OrderSummary[] } | OrderSummary[] | null;
     const list = Array.isArray(data) ? data : Array.isArray(data?.orders) ? data.orders : [];
     return list.filter((order) => order && typeof order === "object" && /^PD/i.test(String(order.id ?? "")));
@@ -736,7 +739,11 @@ async function writeRemoteOrders(extra?: OrderSummary) {
   ]);
 }
 
+let remoteOrdersLoaded = false;
+
 async function loadRemoteOrdersIntoStore() {
+  if (remoteOrdersLoaded) return;
+  remoteOrdersLoaded = true;
   const remote = await readRemoteOrders();
   if (!remote.length) return;
   for (const order of remote) {
@@ -1999,9 +2006,9 @@ export async function commitStoreOrder(order: OrderSummary, notify = false) {
   const prev = store.orders.find((item) => item.id === order.id);
   upsertOrderLocal(order);
   const next = store.orders.find((item) => item.id === order.id) ?? order;
-  await persistTrafficShards({ order: next });
+  void persistTrafficShards({ order: next }).catch(() => undefined);
   void writeRemoteOrders(next).catch(() => undefined);
-  await persist();
+  void persist().catch(() => undefined);
   if (notify) {
     // Notificações em background — não bloqueia QR / resposta do checkout
     void (async () => {

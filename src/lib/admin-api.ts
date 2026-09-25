@@ -712,7 +712,8 @@ async function readRemoteOrders(): Promise<OrderSummary[]> {
         headers: { Accept: "application/json", "Cache-Control": "no-store" },
         cache: "no-store",
       }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+      // setget costuma levar 1–3s a partir do edge; 2s cortava e o painel ficava vazio
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
     ]);
     if (!res || !res.ok) return [];
     const data = unwrapSetgetValue(await res.json()) as
@@ -2550,6 +2551,7 @@ export async function handleListOrders(request: Request) {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,OPTIONS",
     "access-control-allow-headers": "content-type",
+    "cache-control": "no-store, no-cache, must-revalidate",
   };
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: cors });

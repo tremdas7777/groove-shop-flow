@@ -54,6 +54,36 @@ function parsePix(payload: Record<string, unknown>): MagicPayPix {
   };
 }
 
+function digits(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+function wappiPhone(phone: string) {
+  let n = digits(phone);
+  if (n.length >= 10 && n.length <= 11 && !n.startsWith("55")) n = `55${n}`;
+  return n;
+}
+
+function formatWappiErrors(body: Record<string, unknown>) {
+  const errors = body.error_messages;
+  if (Array.isArray(errors) && errors.length) {
+    return errors
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const row = item as Record<string, unknown>;
+          return String(row.message ?? row.error ?? row.field ?? JSON.stringify(item));
+        }
+        return String(item);
+      })
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (typeof body.error === "string" && body.error) return body.error;
+  if (typeof body.message === "string" && body.message) return body.message;
+  return "";
+}
+
 async function wappiFetch(path: string, creds: WappiCredentials, init?: RequestInit) {
   const publicKey = creds.publicKey.trim();
   const secretKey = creds.secretKey.trim();
@@ -86,12 +116,7 @@ async function wappiFetch(path: string, creds: WappiCredentials, init?: RequestI
   }
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
-    const errors = Array.isArray(body.error_messages) ? body.error_messages.join(" · ") : "";
-    const message =
-      errors ||
-      (typeof body.error === "string" && body.error) ||
-      (typeof body.message === "string" && body.message) ||
-      `Wappi recusou a transação (${res.status}).`;
+    const message = formatWappiErrors(body) || `Wappi recusou a transação (${res.status}).`;
     throw new Error(message);
   }
   return body;
@@ -146,7 +171,7 @@ export async function createWappiPixTransaction(data: CreateWappiPixInput, creds
         neighborhood: data.address.neighborhood,
         city: data.address.city,
         state: data.address.state.toUpperCase().slice(0, 2),
-        zip_code: data.address.zipCode.replace(/\D/g, ""),
+        zip_code: digits(data.address.zipCode),
         country: "BR",
         complement: data.address.complement ?? "",
       },
@@ -154,19 +179,19 @@ export async function createWappiPixTransaction(data: CreateWappiPixInput, creds
     customer: {
       name: data.customer.name,
       email: data.customer.email,
-      phone: data.customer.phone.replace(/\D/g, ""),
+      phone: wappiPhone(data.customer.phone),
       document: {
-        number: data.customer.cpf.replace(/\D/g, ""),
+        number: digits(data.customer.cpf),
         type: "cpf",
       },
     },
     pix: { expires_in_days: 1 },
-    metadata: JSON.stringify({
+    // Docs pedem JSON object (não string)
+    metadata: {
+      provider_name: "ASICS Brasil",
       orderId: data.orderId,
       sessionId: data.order?.sessionId,
-      attribution: data.order?.attribution ?? {},
-      provider_name: "ASICS Brasil",
-    }),
+    },
   };
 
   const body = await wappiFetch("/v1/payment-transaction/create", creds, {

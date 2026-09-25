@@ -190,7 +190,7 @@ function ProductPage() {
                     Guia de medidas
                   </span>
                 </div>
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="relative z-20 mt-3 flex flex-wrap gap-2">
                   {sizes.map((s) => (
                     <button
                       key={s}
@@ -200,7 +200,7 @@ function ProductPage() {
                         setSizeError(false);
                       }}
                       className={cn(
-                        "h-11 min-w-11 rounded-full px-3 text-[13px] font-medium",
+                        "relative z-20 h-11 min-w-11 touch-manipulation rounded-full px-3 text-[13px] font-medium",
                         size === s
                           ? "bg-primary text-white"
                           : "bg-[#f3f3f3] text-[#222] hover:bg-[#e8e8e8]",
@@ -218,18 +218,18 @@ function ProductPage() {
               </div>
             )}
 
-            <div className="sticky bottom-0 z-30 -mx-4 mt-8 flex flex-col gap-3 border-t border-border bg-white/95 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur-sm lg:static lg:mx-0 lg:border-0 lg:bg-transparent lg:p-0 lg:backdrop-blur-none">
+            <div className="relative z-20 mt-8 flex flex-col gap-3">
               <button
                 type="button"
                 onClick={handleAdd}
-                className="h-12 w-full rounded-full bg-primary text-[14px] font-semibold text-white"
+                className="relative z-20 h-12 w-full touch-manipulation rounded-full bg-primary text-[14px] font-semibold text-white"
               >
                 {added ? "Adicionado à sacola" : "Adicionar à sacola"}
               </button>
               <button
                 type="button"
                 onClick={handleBuyNow}
-                className="flex h-12 w-full items-center justify-center rounded-full border border-primary text-[14px] font-semibold text-primary"
+                className="relative z-20 flex h-12 w-full touch-manipulation items-center justify-center rounded-full border border-primary text-[14px] font-semibold text-primary"
               >
                 Comprar agora
               </button>

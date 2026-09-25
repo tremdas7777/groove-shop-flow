@@ -316,9 +316,23 @@ export const getStorePix = createServerFn({ method: "GET" })
 
     if (gateway === "wappi") {
       try {
-        const { getWappiPixTransaction } = await import("@/lib/wappi");
-        const result = await getWappiPixTransaction(data.transactionId, config.wappi);
-        return { ok: true as const, pix: withGateway(result.pix, "wappi"), gateway: "wappi" as const };
+        const { getWappiPixTransaction, resolveWappiCredentials } = await import("@/lib/wappi");
+        const creds = resolveWappiCredentials(config.wappi);
+        const result = await getWappiPixTransaction(data.transactionId, creds);
+        if (!result.ok) return result;
+        const pix = withGateway(result.pix, "wappi");
+        if (pix.status === "paid" || pix.status === "refused" || pix.status === "refunded") {
+          try {
+            const { commitStoreOrderByPix } = await import("@/lib/admin-api");
+            await commitStoreOrderByPix(pix, "wappi");
+          } catch {
+            // o /pedido ainda tenta gravar o pagamento
+          }
+        }
+        void import("@/lib/admin-api")
+          .then(({ tickPendingPix }) => tickPendingPix())
+          .catch(() => undefined);
+        return { ok: true as const, pix, gateway: "wappi" as const };
       } catch (error) {
         return {
           ok: false as const,

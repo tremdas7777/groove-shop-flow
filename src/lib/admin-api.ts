@@ -1793,32 +1793,96 @@ async function refreshPendingPix() {
   lastPendingRefresh = Date.now();
   try {
     const { getMagicPayTransaction, orderFromMagicPayTx } = await import("@/lib/magicpay");
-    let changed = false;
+    const { getWappiPixTransaction } = await import("@/lib/wappi");
+    const payment = normalizePayment(store.settings.payment);
+    const wappi = resolveWappiCredentials({
+      publicKey: payment.wappiPublicKey,
+      secretKey: payment.wappiSecretKey,
+      apiUrl: payment.wappiApiUrl,
+    });
+    const wappiReady = Boolean(wappi.publicKey && wappi.secretKey && !wappi.secretKey.includes("•"));
+
     for (const order of pending.slice(0, 8)) {
       try {
+        const gateway: "wappi" | "magicpay" =
+          order.gateway === "magicpay"
+            ? "magicpay"
+            : order.gateway === "wappi" || wappiReady
+              ? "wappi"
+              : "magicpay";
+
+        if (gateway === "wappi") {
+          const result = await getWappiPixTransaction(order.pix!.transactionId!, wappi);
+          if (!result.ok) continue;
+          const pix = { ...result.pix, gateway: "wappi" as const };
+          const paid = pix.status === "paid";
+          const nextStatus: NonNullable<OrderSummary["status"]> =
+            pix.status === "paid"
+              ? "paid"
+              : pix.status === "refused"
+                ? "refused"
+                : pix.status === "refunded"
+                  ? "refunded"
+                  : order.status === "paid"
+                    ? "paid"
+                    : "pending";
+          const refused = nextStatus === "refused" || nextStatus === "refunded";
+          const statusChanged =
+            nextStatus !== (order.status ?? order.pix?.status) || pix.status !== order.pix?.status;
+          if (paid || refused || statusChanged || !order.utmfySent?.waiting_payment) {
+            await commitStoreOrder(
+              {
+                ...order,
+                gateway: "wappi",
+                pix: { ...order.pix, ...pix },
+                status: nextStatus,
+              },
+              true,
+            );
+          }
+          continue;
+        }
+
         const row = await getMagicPayTransaction(order.pix!.transactionId!);
         const incoming = orderFromMagicPayTx(row);
         if (!incoming) continue;
         const merged = mergeOrders(order, incoming);
         merged.attribution = resolveOrderAttribution(merged);
-        upsertOrderLocal(merged);
-        const saved = store.orders.find((item) => item.id === merged.id) ?? merged;
-        ensureOrderTraffic(saved);
-        if (utmfyStatusOf(saved) !== "waiting_payment" || !saved.utmfySent?.waiting_payment) {
-          await notifyUtmfy(saved);
-          changed = true;
+        const becamePaid =
+          (merged.status === "paid" || merged.pix?.status === "paid") &&
+          order.status !== "paid" &&
+          order.pix?.status !== "paid";
+        if (becamePaid || utmfyStatusOf(merged) !== "waiting_payment" || !merged.utmfySent?.waiting_payment) {
+          await commitStoreOrder(merged, true);
         }
       } catch {
         // próxima transação
       }
     }
-    if (changed) await persist();
   } catch {
     lastPendingRefresh = 0;
   }
 }
 
+/** Expõe o poll de PIX pendentes (Wappi/MagicPay → UTMify paid) para rotas públicas. */
+export async function tickPendingPix() {
+  await hydrate();
+  await refreshPendingPix();
+}
+
 async function syncMagicPayOrders() {
+  // Com Wappi ativo, o sync MagicPay/SimPay não deve sobrescrever pedidos da loja.
+  const payment = normalizePayment(store.settings.payment);
+  const wappi = resolveWappiCredentials({
+    publicKey: payment.wappiPublicKey,
+    secretKey: payment.wappiSecretKey,
+    apiUrl: payment.wappiApiUrl,
+  });
+  if (wappi.publicKey && wappi.secretKey && !wappi.secretKey.includes("•")) {
+    await refreshPendingPix();
+    return;
+  }
+
   const pending = pendingPixOrders().length > 0;
   const wait = pending ? 6_000 : 20_000;
   const hasStoreOrders = store.orders.some((order) => /^PD/i.test(order.id));
@@ -1894,6 +1958,38 @@ export async function commitStoreOrder(order: OrderSummary, notify = false) {
   await persistTrafficShards({ order: next });
   await persist();
   return next;
+}
+
+/** Atualiza pedido pelo transactionId do PIX (poll Wappi/MagicPay sem depender do browser). */
+export async function commitStoreOrderByPix(
+  pix: NonNullable<OrderSummary["pix"]> & { gateway?: "magicpay" | "wappi" },
+  gateway: "magicpay" | "wappi" = "wappi",
+) {
+  await hydrate();
+  const tx = String(pix.transactionId ?? "");
+  const order = store.orders.find(
+    (item) => tx !== "" && String(item.pix?.transactionId ?? "") === tx,
+  );
+  if (!order) return null;
+  const nextStatus: NonNullable<OrderSummary["status"]> =
+    pix.status === "paid"
+      ? "paid"
+      : pix.status === "refused"
+        ? "refused"
+        : pix.status === "refunded"
+          ? "refunded"
+          : order.status === "paid"
+            ? "paid"
+            : "pending";
+  return commitStoreOrder(
+    {
+      ...order,
+      gateway,
+      pix: { ...order.pix, ...pix },
+      status: nextStatus,
+    },
+    true,
+  );
 }
 
 function snapshot(): AdminSnapshot {
@@ -2010,6 +2106,7 @@ function keepCartFields(
 
 export const getPublicTrackingSettings = createServerFn({ method: "GET" }).handler(async () => {
   await hydrate();
+  void refreshPendingPix().catch(() => undefined);
   return publicSettings();
 });
 
@@ -2126,6 +2223,8 @@ export async function handleLiveRequest(
   }
   if (request.method === "GET") {
     await mergeLiveBusIntoStore();
+    const job = refreshPendingPix().catch(() => undefined);
+    ctx?.waitUntil?.(job);
     return Response.json({
       ok: true,
       visitors: compactLiveBus({

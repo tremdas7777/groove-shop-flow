@@ -216,7 +216,9 @@ export async function getWappiPixTransaction(transactionId: string | number, cre
 export function envWappiCredentials(): WappiCredentials {
   return {
     publicKey: (process.env.WAPPI_PUBLIC_KEY ?? "").trim(),
-    secretKey: (process.env.WAPPI_SECRET_KEY ?? "").trim(),
+    secretKey:
+      (process.env.WAPPI_SECRET_KEY ?? "").trim() ||
+      (process.env.STRIPE_LIVE_API_KEY ?? "").trim(),
     apiUrl: (process.env.WAPPI_API_URL ?? "").trim() || DEFAULT_WAPPI_API,
   };
 }

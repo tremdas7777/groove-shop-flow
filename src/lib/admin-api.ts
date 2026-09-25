@@ -892,19 +892,22 @@ async function loadUtmfyToken() {
 }
 
 function mergeVisitor(prevIn: PresenceVisitor | undefined, incoming: PresenceVisitor): PresenceVisitor {
-  const prev = prevIn ?? ({} as PresenceVisitor);
-  if (!prev) return incoming;
-  const newer = incoming.lastTs >= prev.lastTs ? incoming : prev;
+  if (!prevIn?.sessionId) return incoming;
+  const prev = prevIn;
+  // Sem lastTs no prev, string >= undefined é false e apagava o visitante (Live View vazia).
+  const incomingNewer = !prev.lastTs || (Boolean(incoming.lastTs) && incoming.lastTs >= prev.lastTs);
+  const newer = incomingNewer ? incoming : prev;
   const older = newer === incoming ? prev : incoming;
   return {
     ...older,
     ...newer,
+    sessionId: incoming.sessionId || prev.sessionId,
     startedAt: prev.startedAt || incoming.startedAt,
-    lastTs: newer.lastTs,
+    lastTs: newer.lastTs || older.lastTs,
     lastEvent:
       newer.lastEvent === "heartbeat" && older.lastEvent && older.lastEvent !== "heartbeat"
         ? older.lastEvent
-        : newer.lastEvent,
+        : newer.lastEvent || older.lastEvent,
     cartItems: newer.cartItems?.length ? newer.cartItems : older.cartItems,
     cartValue: newer.cartValue || older.cartValue,
     email: newer.email || older.email,

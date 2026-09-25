@@ -195,3 +195,14 @@ export function envWappiCredentials(): WappiCredentials {
     apiUrl: (process.env.WAPPI_API_URL ?? "").trim() || DEFAULT_WAPPI_API,
   };
 }
+
+export function resolveWappiCredentials(fromSettings?: Partial<WappiCredentials> | null): WappiCredentials {
+  const env = envWappiCredentials();
+  const publicKey = (fromSettings?.publicKey ?? "").trim() || env.publicKey;
+  const secretKey =
+    (fromSettings?.secretKey ?? "").trim() && !(fromSettings?.secretKey ?? "").includes("•")
+      ? (fromSettings?.secretKey ?? "").trim()
+      : env.secretKey;
+  const apiUrl = (fromSettings?.apiUrl ?? "").trim() || env.apiUrl;
+  return { publicKey, secretKey, apiUrl };
+}

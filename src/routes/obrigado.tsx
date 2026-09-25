@@ -4,7 +4,7 @@ import { Check } from "lucide-react";
 import { CheckoutShell } from "@/components/CheckoutShell";
 import { customerFirstName, loadOrder, persistOrder, type OrderSummary } from "@/lib/checkout";
 import { runningKits, type KitPiece, type RunningKit } from "@/lib/kits";
-import { createStorePix } from "@/lib/payment-gateway";
+import { createStorePix } from "@/lib/magicpay";
 import { formatBRL } from "@/lib/products";
 import { getAttribution, getSessionId, track } from "@/lib/tracking";
 import { orderStatus } from "@/lib/admin";

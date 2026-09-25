@@ -132,113 +132,201 @@ async function magicPayFetch(path: string, init?: RequestInit) {
   return body;
 }
 
-export const createMagicPayPix = createServerFn({ method: "POST" })
-  .validator(createPixInput)
-  .handler(async ({ data }) => {
-    try {
-      const payload = {
-        amount: data.amountCents,
-        paymentMethod: "pix",
-        pix: { expiresInDays: 1 },
-        items: data.items.map((item) => ({
-          title: gatewayTitle(item.title),
-          unitPrice: item.unitPrice,
-          quantity: item.quantity,
-          tangible: true,
-          externalRef: item.externalRef,
-        })),
-        shipping: {
-          fee: data.shippingCents,
-          address: {
-            street: data.address.street,
-            streetNumber: data.address.streetNumber,
-            neighborhood: data.address.neighborhood,
-            city: data.address.city,
-            state: data.address.state.toUpperCase().slice(0, 2),
-            zipCode: data.address.zipCode.replace(/\D/g, ""),
-            country: "BR",
-            complement: data.address.complement ?? "",
-          },
-        },
-        customer: {
-          name: data.customer.name,
-          email: data.customer.email,
-          phone: data.customer.phone.replace(/\D/g, ""),
-          document: {
-            number: data.customer.cpf.replace(/\D/g, ""),
-            type: "cpf",
-          },
-        },
-        externalRef: data.orderId,
-        metadata: JSON.stringify({
-          orderId: data.orderId,
-          sessionId: data.order?.sessionId,
-          attribution: compactAttribution(data.order?.attribution),
-        }),
-      };
+export type CreateMagicPayPixInput = z.infer<typeof createPixInput>;
 
-      const body = await magicPayFetch("/v1/transactions", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      const pix = parsePix(body);
-      if (!pix.qrcode) {
-        return {
-          ok: false as const,
-          error: "A MagicPay não devolveu o QR Code PIX.",
-        };
-      }
-      if (data.order) {
-        void import("@/lib/admin-api")
-          .then(({ commitStoreOrder }) =>
-            commitStoreOrder(
-              { ...data.order!, pix, status: data.order?.status ?? "pending", gateway: "magicpay" },
-              true,
-            ),
-          )
-          .catch(() => undefined);
-      }
-      return { ok: true as const, pix };
-    } catch (error) {
+/** Lógica pura — usar no servidor sem passar por RPC de outra server fn. */
+export async function createMagicPayPixTransaction(data: CreateMagicPayPixInput) {
+  try {
+    const payload = {
+      amount: data.amountCents,
+      paymentMethod: "pix",
+      pix: { expiresInDays: 1 },
+      items: data.items.map((item) => ({
+        title: gatewayTitle(item.title),
+        unitPrice: item.unitPrice,
+        quantity: item.quantity,
+        tangible: true,
+        externalRef: item.externalRef,
+      })),
+      shipping: {
+        fee: data.shippingCents,
+        address: {
+          street: data.address.street,
+          streetNumber: data.address.streetNumber,
+          neighborhood: data.address.neighborhood,
+          city: data.address.city,
+          state: data.address.state.toUpperCase().slice(0, 2),
+          zipCode: data.address.zipCode.replace(/\D/g, ""),
+          country: "BR",
+          complement: data.address.complement ?? "",
+        },
+      },
+      customer: {
+        name: data.customer.name,
+        email: data.customer.email,
+        phone: data.customer.phone.replace(/\D/g, ""),
+        document: {
+          number: data.customer.cpf.replace(/\D/g, ""),
+          type: "cpf",
+        },
+      },
+      externalRef: data.orderId,
+      metadata: JSON.stringify({
+        orderId: data.orderId,
+        sessionId: data.order?.sessionId,
+        attribution: compactAttribution(data.order?.attribution),
+      }),
+    };
+
+    const body = await magicPayFetch("/v1/transactions", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const pix = parsePix(body);
+    if (!pix.qrcode) {
       return {
         ok: false as const,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Não foi possível gerar o PIX.",
+        error: "A MagicPay não devolveu o QR Code PIX.",
       };
     }
-  });
+    if (data.order) {
+      void import("@/lib/admin-api")
+        .then(({ commitStoreOrder }) =>
+          commitStoreOrder(
+            { ...data.order!, pix, status: data.order?.status ?? "pending", gateway: "magicpay" },
+            true,
+          ),
+        )
+        .catch(() => undefined);
+    }
+    return { ok: true as const, pix };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : "Não foi possível gerar o PIX.",
+    };
+  }
+}
+
+export async function getMagicPayPixTransaction(transactionId: string | number) {
+  try {
+    const body = await magicPayFetch(
+      `/v1/transactions/${encodeURIComponent(String(transactionId))}`,
+    );
+    const pix = parsePix(body);
+    if (pix.status === "paid") {
+      try {
+        const { commitStoreOrder } = await import("@/lib/admin-api");
+        const fromGateway = orderFromMagicPayTx(body);
+        if (fromGateway) {
+          await commitStoreOrder({ ...fromGateway, pix, status: "paid" }, true);
+        }
+      } catch {
+        // o /pedido ainda tenta gravar o pagamento
+      }
+    }
+    return { ok: true as const, pix };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : "Não foi possível consultar o PIX.",
+    };
+  }
+}
+
+export const createMagicPayPix = createServerFn({ method: "POST" })
+  .validator(createPixInput)
+  .handler(async ({ data }) => createMagicPayPixTransaction(data));
 
 export const getMagicPayPix = createServerFn({ method: "GET" })
   .validator(z.object({ transactionId: z.union([z.string(), z.number()]) }))
+  .handler(async ({ data }) => getMagicPayPixTransaction(data.transactionId));
+
+async function resolveGateway() {
+  const { getPaymentGatewayConfig } = await import("@/lib/admin-api");
+  return getPaymentGatewayConfig();
+}
+
+function withGateway(pix: MagicPayPix, gateway: "magicpay" | "wappi") {
+  return { ...pix, gateway };
+}
+
+/** Gateway ativo (MagicPay ou Wappi) — definido aqui para o servidor registrar o hash. */
+export const createStorePix = createServerFn({ method: "POST" })
+  .validator(createPixInput)
   .handler(async ({ data }) => {
-    try {
-      const body = await magicPayFetch(
-        `/v1/transactions/${encodeURIComponent(String(data.transactionId))}`,
-      );
-      const pix = parsePix(body);
-      if (pix.status === "paid") {
-        try {
-          const { commitStoreOrder } = await import("@/lib/admin-api");
-          const fromGateway = orderFromMagicPayTx(body);
-          if (fromGateway) {
-            await commitStoreOrder({ ...fromGateway, pix, status: "paid" }, true);
-          }
-        } catch {
-          // o /pedido ainda tenta gravar o pagamento
+    const config = await resolveGateway();
+    const gateway = config.provider;
+
+    if (gateway === "wappi") {
+      try {
+        const { createWappiPixTransaction } = await import("@/lib/wappi");
+        const result = await createWappiPixTransaction(data, config.wappi);
+        if (!result.ok) return result;
+        if (data.order) {
+          void import("@/lib/admin-api")
+            .then(({ commitStoreOrder }) =>
+              commitStoreOrder(
+                {
+                  ...data.order!,
+                  gateway: "wappi",
+                  pix: result.pix,
+                  status: data.order?.status ?? "pending",
+                },
+                true,
+              ),
+            )
+            .catch(() => undefined);
         }
+        return { ok: true as const, pix: withGateway(result.pix, "wappi"), gateway: "wappi" as const };
+      } catch (error) {
+        return {
+          ok: false as const,
+          error: error instanceof Error ? error.message : "Não foi possível gerar o PIX na Wappi.",
+        };
       }
-      return { ok: true as const, pix };
-    } catch (error) {
-      return {
-        ok: false as const,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Não foi possível consultar o PIX.",
-      };
     }
+
+    const result = await createMagicPayPixTransaction(data);
+    if (!result.ok) return result;
+    return {
+      ok: true as const,
+      pix: withGateway(result.pix, "magicpay"),
+      gateway: "magicpay" as const,
+    };
+  });
+
+export const getStorePix = createServerFn({ method: "GET" })
+  .validator(
+    z.object({
+      transactionId: z.union([z.string(), z.number()]),
+      gateway: z.enum(["magicpay", "wappi"]).optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const config = await resolveGateway();
+    const gateway = data.gateway || config.provider;
+
+    if (gateway === "wappi") {
+      try {
+        const { getWappiPixTransaction } = await import("@/lib/wappi");
+        const result = await getWappiPixTransaction(data.transactionId, config.wappi);
+        return { ok: true as const, pix: withGateway(result.pix, "wappi"), gateway: "wappi" as const };
+      } catch (error) {
+        return {
+          ok: false as const,
+          error: error instanceof Error ? error.message : "Não foi possível consultar o PIX na Wappi.",
+        };
+      }
+    }
+
+    const result = await getMagicPayPixTransaction(data.transactionId);
+    if (!result.ok) return result;
+    return {
+      ok: true as const,
+      pix: withGateway(result.pix, "magicpay"),
+      gateway: "magicpay" as const,
+    };
   });
 
 function asRecord(value: unknown): Record<string, unknown> {

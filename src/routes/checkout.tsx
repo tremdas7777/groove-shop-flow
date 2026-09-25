@@ -18,7 +18,7 @@ import {
   type CheckoutData,
   type OrderSummary,
 } from "@/lib/checkout";
-import { createStorePix } from "@/lib/payment-gateway";
+import { createStorePix } from "@/lib/magicpay";
 import {
   formatBRL,
   getProduct,

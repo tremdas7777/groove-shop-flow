@@ -10,7 +10,7 @@ import {
   updateOrderPix,
   type OrderSummary,
 } from "@/lib/checkout";
-import { getStorePix } from "@/lib/payment-gateway";
+import { getStorePix } from "@/lib/magicpay";
 import { formatBRL } from "@/lib/products";
 import { track } from "@/lib/tracking";
 

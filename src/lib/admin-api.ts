@@ -18,7 +18,7 @@ import {
   type PresenceVisitor,
   type PublicTrackingSettings,
 } from "@/lib/admin";
-import { resolveWappiCredentials } from "@/lib/payment-gateway";
+import { resolveWappiCredentials } from "@/lib/wappi";
 import { envWappiCredentials } from "@/lib/wappi";
 import { UTMIFY_PIXEL_ID } from "@/lib/utmify-pixel";
 import {
